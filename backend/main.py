@@ -26,13 +26,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from mqtt_client import CURRENT_STATE, start_mqtt, stop_mqtt
+
 DB = Path(__file__).parent / "supplyguard.db"
 FRONTEND = Path(__file__).parent.parent / "frontend"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    start_mqtt()  # 连接失败只打警告, 不阻塞启动
     yield
+    stop_mqtt()
 
 
 app = FastAPI(title="应急物资保障 SupplyGuard", version="0.1.0", lifespan=lifespan)
@@ -236,6 +240,12 @@ def index():
 def state():
     items, summary = compute_state()
     return {"items": items, "summary": summary}
+
+
+@app.get("/api/current-state")
+def current_state():
+    """B-B03 阶段01: 返回 MQTT 收到的最新内存状态 (不落库、不保存历史)."""
+    return CURRENT_STATE
 
 
 @app.post("/api/analyze")
