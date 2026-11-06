@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -246,6 +246,33 @@ def state():
 def current_state():
     """B-B03 阶段01: 返回 MQTT 收到的最新内存状态 (不落库、不保存历史)."""
     return CURRENT_STATE
+
+
+@app.get("/api/reserve/{reserve_id}")
+def reserve_detail(reserve_id: str):
+    """B-B03 阶段01: 查询单个储备点当前库存 (仅内存 CURRENT_STATE)."""
+    node = CURRENT_STATE["reserves"].get(reserve_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="reserve %s not found" % reserve_id)
+    return node
+
+
+@app.get("/api/service/{service_id}")
+def service_detail(service_id: str):
+    """B-B03 阶段01: 查询单个服务点当前需求 (仅内存 CURRENT_STATE)."""
+    node = CURRENT_STATE["services"].get(service_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="service %s not found" % service_id)
+    return node
+
+
+@app.get("/api/transport/{transport_id}")
+def transport_detail(transport_id: str):
+    """B-B03 阶段01: 查询单个运输资源当前状态 (仅内存 CURRENT_STATE)."""
+    node = CURRENT_STATE["transports"].get(transport_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="transport %s not found" % transport_id)
+    return node
 
 
 @app.post("/api/analyze")
