@@ -7,6 +7,13 @@ topic 约定 (与 simulator/simulator.py 发布的一致):
     nova/bb03/reserve/{reserve_id}/stock       储备点库存
     nova/bb03/service/{service_id}/demand      服务点需求
     nova/bb03/transport/{transport_id}/status  运输资源状态
+
+告警: 收到消息更新状态后同步全量重算三类告警条件, 结果保存在内存
+列表 ALERTS 中 (不落库):
+    low_stock:      储备点某物资库存 < 2
+    demand_overrun: 服务点某物资需求缺口 > 5 (缺口 = 需求 - 全网该物资库存)
+    vehicle_fault:  运输车 availability == "FAULT"
+同一资源同一告警 active 期间不重复新增; 条件恢复时置 active=false, 不删除记录.
 """
 
 import json
@@ -31,6 +38,14 @@ CURRENT_STATE = {
     "transports": {},   # transport_id -> payload
     "updated_at": None,  # 最后收到消息的时间
 }
+
+# ---- 告警状态 (只存内存, 不落库) ----
+LOW_STOCK_THRESHOLD = 2
+GAP_THRESHOLD = 5
+
+ALERTS = []          # 全部告警记录 (含已恢复的), 按触发时间排序
+_next_alert_id = 1   # alert_id 自增, 程序启动从 1 开始
+_active_alerts = {}  # (type, resource_type, resource_id, material) -> alert, 活跃告警去重索引
 
 _client = None
 
@@ -86,6 +101,7 @@ def _on_message(client, userdata, msg):
     else:
         logger.warning("unknown topic kind %s, ignored", msg.topic)
     CURRENT_STATE["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    _recompute_alerts()
 
 
 def _update_material_state(bucket: dict, obj_id: str, payload: dict):
@@ -93,3 +109,70 @@ def _update_material_state(bucket: dict, obj_id: str, payload: dict):
     material_id = payload.get("material_id", "?")
     node = bucket.setdefault(obj_id, {"materials": {}})
     node["materials"][material_id] = payload
+
+
+# ---- 告警计算 ----
+
+def _total_stock(material_id: str) -> int:
+    """全网储备点某物资库存合计, 作为服务点需求缺口的参照。"""
+    total = 0
+    for node in CURRENT_STATE["reserves"].values():
+        item = node["materials"].get(material_id)
+        if item:
+            total += item.get("quantity", 0)
+    return total
+
+
+def _set_alert(key: tuple, condition: bool, make_message):
+    """条件满足且无活跃告警 → 新增; 条件恢复且告警活跃 → active=false, 记录保留。"""
+    existing = _active_alerts.get(key)
+    if condition and existing is None:
+        global _next_alert_id
+        alert = {
+            "alert_id": _next_alert_id,
+            "type": key[0],
+            "resource_type": key[1],
+            "resource_id": key[2],
+            "material": key[3],
+            "message": make_message(),
+            "create_at": datetime.now().isoformat(timespec="seconds"),
+            "active": True,
+        }
+        _next_alert_id += 1
+        ALERTS.append(alert)
+        _active_alerts[key] = alert
+    elif not condition and existing is not None:
+        existing["active"] = False
+        del _active_alerts[key]
+
+
+def _recompute_alerts():
+    """收到任何消息后全量重算三类告警条件。数据量小, 全量重算保证恢复逻辑不漏。"""
+    # 储备点低库存
+    for reserve_id, node in CURRENT_STATE["reserves"].items():
+        for material_id, item in node["materials"].items():
+            low = item.get("quantity", 0) < LOW_STOCK_THRESHOLD
+            _set_alert(
+                ("low_stock", "reserve", reserve_id, material_id),
+                low,
+                lambda r=reserve_id, i=item: "储备点 %s 物资 %s 库存过低 (当前 %s, 阈值 %s)"
+                % (r, i.get("material_id", "?"), i.get("quantity"), LOW_STOCK_THRESHOLD),
+            )
+    # 服务点需求缺口
+    for service_id, node in CURRENT_STATE["services"].items():
+        for material_id, item in node["materials"].items():
+            gap = max(item.get("required_quantity", 0) - _total_stock(material_id), 0)
+            _set_alert(
+                ("demand_overrun", "service", service_id, material_id),
+                gap > GAP_THRESHOLD,
+                lambda s=service_id, m=material_id, g=gap: "服务点 %s 物资 %s 需求缺口过大 (缺口 %s, 阈值 %s)"
+                % (s, m, g, GAP_THRESHOLD),
+            )
+    # 运输车故障
+    for transport_id, item in CURRENT_STATE["transports"].items():
+        fault = item.get("availability") == "FAULT"
+        _set_alert(
+            ("vehicle_fault", "transport", transport_id, ""),
+            fault,
+            lambda t=transport_id: "运输车 %s 故障 (FAULT)" % t,
+        )

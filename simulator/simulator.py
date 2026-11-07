@@ -14,6 +14,8 @@
     python simulator/simulator.py --interval 5   # 5 秒一轮
     python simulator/simulator.py --rounds 3     # 发布 3 轮后退出
     python simulator/simulator.py --seed 42      # 固定随机种子, 结果可复现
+    python simulator/simulator.py --stress       # 告警压测: 库存 0-1 / 需求 7-10 / 车辆必 FAULT
+    python simulator/simulator.py --fault-prob 0.3  # 每辆车每轮 30% 概率发 FAULT
 
 依赖: paho-mqtt>=2.0 (pip install paho-mqtt)
 运行前需先启动 MQTT broker (默认 127.0.0.1:1883, 如 mosquitto).
@@ -74,8 +76,11 @@ def transport_status_payload(transport_id: str, availability: str, capacity: int
 
 
 class Simulator:
-    def __init__(self, host: str, port: int, interval: float, seed):
+    def __init__(self, host: str, port: int, interval: float, seed,
+                 fault_prob: float = 0.0, stress: bool = False):
         self.interval = interval
+        self.fault_prob = fault_prob
+        self.stress = stress
         self.rng = random.Random(seed)
         # 库存世界状态: (reserve_id, material_id) -> quantity, 初始 3-8
         self.stocks = {
@@ -105,20 +110,28 @@ class Simulator:
         # ① 储备点库存: R1/R2 × W/L/R, 每轮 6 条
         for reserve_id in RESERVES:
             for material_id in MATERIALS:
+                quantity = (self.rng.randint(0, 1) if self.stress
+                            else self.stocks[(reserve_id, material_id)])
                 self.publish(
                     f"nova/bb03/reserve/{reserve_id}/stock",
-                    reserve_stock_payload(reserve_id, material_id, self.stocks[(reserve_id, material_id)]),
+                    reserve_stock_payload(reserve_id, material_id, quantity),
                 )
         # ② 服务点需求: 每个服务点每轮随机一种物资, 每轮 3 条
         for service_id in SERVICES:
             material_id = self.rng.choice(MATERIALS)
+            quantity = self.rng.randint(7, 10) if self.stress else self.rng.randint(2, 8)
             self.publish(
                 f"nova/bb03/service/{service_id}/demand",
-                service_demand_payload(service_id, material_id, self.rng.randint(2, 8)),
+                service_demand_payload(service_id, material_id, quantity),
             )
         # ③ 运输资源状态: 每轮 2 条, 多数时间 AVAILABLE, 偶尔 IN_TRANSIT
         for transport_id in TRANSPORTS:
-            availability = self.rng.choices(["AVAILABLE", "IN_TRANSIT"], weights=[7, 3])[0]
+            if self.stress:
+                availability = "FAULT"
+            elif self.rng.random() < self.fault_prob:
+                availability = "FAULT"
+            else:
+                availability = self.rng.choices(["AVAILABLE", "IN_TRANSIT"], weights=[7, 3])[0]
             self.publish(
                 f"nova/bb03/transport/{transport_id}/status",
                 transport_status_payload(transport_id, availability, self.rng.randint(4, 8)),
@@ -140,9 +153,12 @@ def main():
     parser.add_argument("--interval", type=float, default=10.0, help="每轮间隔秒数 (默认 10)")
     parser.add_argument("--rounds", type=int, default=0, help="发布轮数, 0 表示无限运行 (默认 0)")
     parser.add_argument("--seed", type=int, default=None, help="随机种子, 默认每次随机")
+    parser.add_argument("--fault-prob", type=float, default=0.0, help="每辆车每轮发 FAULT 的概率 0-1 (默认 0)")
+    parser.add_argument("--stress", action="store_true", help="告警压测模式: 库存 0-1 / 需求 7-10 / 车辆必 FAULT")
     args = parser.parse_args()
 
-    sim = Simulator(args.host, args.port, args.interval, args.seed)
+    sim = Simulator(args.host, args.port, args.interval, args.seed,
+                    fault_prob=args.fault_prob, stress=args.stress)
     print(f"模拟器已启动, 目标 broker {args.host}:{args.port}, 每轮 {args.interval}s, Ctrl+C 停止")
     round_no = 0
     try:

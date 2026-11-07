@@ -26,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from mqtt_client import CURRENT_STATE, start_mqtt, stop_mqtt
+from mqtt_client import ALERTS, CURRENT_STATE, start_mqtt, stop_mqtt
 
 DB = Path(__file__).parent / "supplyguard.db"
 FRONTEND = Path(__file__).parent.parent / "frontend"
@@ -273,6 +273,18 @@ def transport_detail(transport_id: str):
     if node is None:
         raise HTTPException(status_code=404, detail="transport %s not found" % transport_id)
     return node
+
+
+@app.get("/api/alerts")
+def alerts():
+    """B-B03 阶段01: 返回全部告警记录 (含已恢复 active=false, 记录不删除)."""
+    return {"alerts": ALERTS}
+
+
+@app.get("/api/alerts/active")
+def active_alerts():
+    """B-B03 阶段01: 只返回当前活跃告警 (active=true)."""
+    return {"alerts": [a for a in ALERTS if a["active"]]}
 
 
 @app.post("/api/analyze")
