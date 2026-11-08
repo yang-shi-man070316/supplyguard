@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from mqtt_client import ALERTS, CURRENT_STATE, start_mqtt, stop_mqtt
+import db
 
 DB = Path(__file__).parent / "supplyguard.db"
 FRONTEND = Path(__file__).parent.parent / "frontend"
