@@ -187,6 +187,8 @@ def _recompute_alerts():
 
 
 # ---- 落库 (任务2-2) ----
+# evidence_type 按任务2-2需求: stock / demand / transport
+_EVIDENCE_TYPE_MAP = {"reserve": "stock", "service": "demand", "transport": "transport"}
 
 def _persist_observation(kind: str, obj_id: str, payload: dict):
     """每条消息写一条观测记录 + 一条 status=ok 的 evidence。
@@ -230,7 +232,7 @@ def _persist_observation(kind: str, obj_id: str, payload: dict):
                 "INSERT INTO evidence "
                 "(evidence_type, source_id, status, value_json, observed_at, retrieved_at) "
                 "VALUES (?,?,?,?,?,?)",
-                (kind, obj_id, "ok", json.dumps(payload, ensure_ascii=False),
+                (_EVIDENCE_TYPE_MAP[kind], obj_id, "ok", json.dumps(payload, ensure_ascii=False),
                  payload.get("observed_at"), datetime.now().isoformat(timespec="seconds")),
             )
             conn.commit()

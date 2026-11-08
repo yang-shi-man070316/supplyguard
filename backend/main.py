@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from mqtt_client import ALERTS, CURRENT_STATE, start_mqtt, stop_mqtt
-import db
+from db import get_conn, close_conn
 
 DB = Path(__file__).parent / "supplyguard.db"
 FRONTEND = Path(__file__).parent.parent / "frontend"
@@ -286,6 +286,82 @@ def alerts():
 def active_alerts():
     """B-B03 阶段01: 只返回当前活跃告警 (active=true)."""
     return {"alerts": [a for a in ALERTS if a["active"]]}
+
+
+@app.get("/api/history/stocks")
+def history_stocks(reserve_id: str = None):
+    """B-B03 阶段02: 储备点库存观测历史 (只读)。不传 reserve_id 返回整表, 无匹配返回 []. """
+    conn = get_conn()
+    try:
+        if reserve_id:
+            rows = conn.execute(
+                "SELECT * FROM stock_observations WHERE reserve_id=? ORDER BY stock_id",
+                (reserve_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM stock_observations ORDER BY stock_id").fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/history/demands")
+def history_demands(service_id: str = None):
+    """B-B03 阶段02: 服务点需求历史 (只读)。不传 service_id 返回整表, 无匹配返回 []. """
+    conn = get_conn()
+    try:
+        if service_id:
+            rows = conn.execute(
+                "SELECT * FROM demand_records WHERE service_id=? ORDER BY demand_id",
+                (service_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM demand_records ORDER BY demand_id").fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/history/transports")
+def history_transports(transport_id: str = None):
+    """B-B03 阶段02: 运输状态观测历史 (只读)。不传 transport_id 返回整表, 无匹配返回 []. """
+    conn = get_conn()
+    try:
+        if transport_id:
+            rows = conn.execute(
+                "SELECT * FROM transport_observations WHERE transport_id=? ORDER BY observation_id",
+                (transport_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM transport_observations ORDER BY observation_id"
+            ).fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/evidence")
+def evidence_history(evidence_type: str = None, source_id: str = None):
+    """B-B03 阶段02: 取证记录历史 (只读)。参数均可选, 不传返回整表, 无匹配返回 []. """
+    conds, params = [], []
+    if evidence_type:
+        conds.append("evidence_type=?")
+        params.append(evidence_type)
+    if source_id:
+        conds.append("source_id=?")
+        params.append(source_id)
+    sql = "SELECT * FROM evidence"
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY evidence_id"
+
+    conn = get_conn()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
 
 
 @app.post("/api/analyze")
