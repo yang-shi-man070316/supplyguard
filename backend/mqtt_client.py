@@ -60,6 +60,7 @@ _client = None
 def start_mqtt(host: str = "127.0.0.1", port: int = 1883):
     """启动时连接 broker。连接失败只打警告, 由 paho 按策略自动重试, 不崩溃。"""
     global _client
+    _ensure_alert_persistence()  # 任务2-4: 补齐告警表缺列 + 初始化 alert_id 计数器
     _client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     _client.on_connect = _on_connect
     _client.on_connect_fail = _on_connect_fail
@@ -132,7 +133,11 @@ def _total_stock(material_id: str) -> int:
 
 
 def _set_alert(key: tuple, condition: bool, make_message):
-    """条件满足且无活跃告警 → 新增; 条件恢复且告警活跃 → active=false, 记录保留。"""
+    """条件满足且无活跃告警 → 新增; 条件恢复且告警活跃 → active=false, 记录保留。
+
+    同步落库 (任务2-4): 新告警 INSERT; 活跃期间重复触发不新增行, 只刷新库里的
+    updated_at; 恢复时置 active=0 (resolved)。写库失败只记日志, 不影响内存告警。
+    """
     existing = _active_alerts.get(key)
     if condition and existing is None:
         global _next_alert_id
@@ -149,9 +154,74 @@ def _set_alert(key: tuple, condition: bool, make_message):
         _next_alert_id += 1
         ALERTS.append(alert)
         _active_alerts[key] = alert
+        _persist_alert_change("insert", alert)
+    elif condition and existing is not None:
+        _persist_alert_change("touch", existing)  # 活跃期间重复触发: 只刷时间/状态
     elif not condition and existing is not None:
         existing["active"] = False
         del _active_alerts[key]
+        _persist_alert_change("resolve", existing)
+
+
+def _ensure_alert_persistence():
+    """任务2-4: 补齐 alert_records 缺列 (幂等) 并初始化 alert_id 计数器。
+
+    resource_id / updated_at 为 2-1 建表后新增需求所需, 不新建表、不改 db.py。
+    """
+    global _next_alert_id
+    try:
+        conn = db.get_conn()
+        try:
+            for ddl in (
+                "ALTER TABLE alert_records ADD COLUMN resource_id TEXT",
+                "ALTER TABLE alert_records ADD COLUMN updated_at TEXT",
+            ):
+                try:
+                    conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    pass  # 列已存在
+            conn.commit()
+            row = conn.execute(
+                "SELECT COALESCE(MAX(alert_id), 0) FROM alert_records"
+            ).fetchone()
+            _next_alert_id = row[0] + 1  # 重启后不撞库中历史 alert_id
+        finally:
+            db.close_conn(conn)
+    except sqlite3.Error as exc:
+        logger.warning("alert table setup failed: %s", exc)
+
+
+def _persist_alert_change(action: str, alert: dict):
+    """告警状态变化同步到 alert_records 表。写库失败只记日志。"""
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        conn = db.get_conn()
+        try:
+            if action == "insert":
+                conn.execute(
+                    "INSERT INTO alert_records "
+                    "(alert_id, type, resource_type, resource_id, material, active, "
+                    "message, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (alert["alert_id"], alert["type"], alert["resource_type"],
+                     alert["resource_id"], alert["material"], 1, alert["message"],
+                     alert["create_at"], now),
+                )
+            elif action == "touch":
+                conn.execute(
+                    "UPDATE alert_records SET updated_at=?, active=1 "
+                    "WHERE alert_id=? AND active=1",
+                    (now, alert["alert_id"]),
+                )
+            elif action == "resolve":
+                conn.execute(
+                    "UPDATE alert_records SET updated_at=?, active=0 WHERE alert_id=?",
+                    (now, alert["alert_id"]),
+                )
+            conn.commit()
+        finally:
+            db.close_conn(conn)
+    except sqlite3.Error as exc:
+        logger.warning("persist alert %s/%s failed: %s", action, alert.get("alert_id"), exc)
 
 
 def _recompute_alerts():

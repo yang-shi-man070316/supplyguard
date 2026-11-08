@@ -288,6 +288,40 @@ def active_alerts():
     return {"alerts": [a for a in ALERTS if a["active"]]}
 
 
+@app.get("/api/alerts/history")
+def alerts_history(status: str = None, source_id: str = None):
+    """B-B03 阶段02: 告警历史 (只读数据库)。
+
+    status=active/resolved 过滤状态 (其他值忽略); source_id 按资源过滤。
+    无匹配返回 [], 按告警产生时间倒序, 时间字段原样返回。
+    """
+    conds, params = [], []
+    if status == "active":
+        conds.append("active=1")
+    elif status == "resolved":
+        conds.append("active=0")
+    if source_id:
+        conds.append("resource_id=?")
+        params.append(source_id)
+    sql = "SELECT * FROM alert_records"
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY created_at DESC, db_id DESC"
+
+    conn = get_conn()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        close_conn(conn)
+
+    result = []
+    for r in rows:
+        item = dict(r)
+        item["status"] = "active" if item["active"] else "resolved"
+        result.append(item)
+    return result
+
+
 @app.get("/api/history/stocks")
 def history_stocks(reserve_id: str = None):
     """B-B03 阶段02: 储备点库存观测历史 (只读)。不传 reserve_id 返回整表, 无匹配返回 []. """
