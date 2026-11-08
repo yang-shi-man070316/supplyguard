@@ -140,6 +140,8 @@ class Simulator:
 
     def close(self):
         self.client.loop_stop()
+        for _ in range(10):  # 手动驱动网络循环, flush 出站队列里未发送的消息
+            self.client.loop(timeout=0.1)
         self.client.disconnect()
 
 

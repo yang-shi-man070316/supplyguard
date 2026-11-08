@@ -14,13 +14,20 @@ topic 约定 (与 simulator/simulator.py 发布的一致):
     demand_overrun: 服务点某物资需求缺口 > 5 (缺口 = 需求 - 全网该物资库存)
     vehicle_fault:  运输车 availability == "FAULT"
 同一资源同一告警 active 期间不重复新增; 条件恢复时置 active=false, 不删除记录.
+
+落库 (任务2-2): 每条收到的消息同时写对应观测表 (stock_observations /
+demand_records / transport_observations) 和一条 status=ok 的 evidence 记录。
+写库失败只记日志, 不影响内存状态更新。
 """
 
 import json
 import logging
+import sqlite3
 from datetime import datetime
 
 from paho.mqtt import client as mqtt
+
+import db
 
 logger = logging.getLogger("mqtt")
 
@@ -102,6 +109,7 @@ def _on_message(client, userdata, msg):
         logger.warning("unknown topic kind %s, ignored", msg.topic)
     CURRENT_STATE["updated_at"] = datetime.now().isoformat(timespec="seconds")
     _recompute_alerts()
+    _persist_observation(kind, obj_id, payload)
 
 
 def _update_material_state(bucket: dict, obj_id: str, payload: dict):
@@ -176,3 +184,57 @@ def _recompute_alerts():
             fault,
             lambda t=transport_id: "运输车 %s 故障 (FAULT)" % t,
         )
+
+
+# ---- 落库 (任务2-2) ----
+
+def _persist_observation(kind: str, obj_id: str, payload: dict):
+    """每条消息写一条观测记录 + 一条 status=ok 的 evidence。
+
+    写库失败只记日志, 绝不抛出——内存状态更新在此调用之前已完成。
+    """
+    try:
+        conn = db.get_conn()
+        try:
+            if kind == "reserve":
+                conn.execute(
+                    "INSERT INTO stock_observations "
+                    "(reserve_id, material_id, quantity, observed_at, source_type) "
+                    "VALUES (?,?,?,?,?)",
+                    (payload.get("reserve_id"), payload.get("material_id"),
+                     payload.get("quantity"), payload.get("observed_at"),
+                     payload.get("source_type")),
+                )
+            elif kind == "service":
+                conn.execute(
+                    "INSERT INTO demand_records "
+                    "(service_id, material_id, required_quantity, observed_at, source_type) "
+                    "VALUES (?,?,?,?,?)",
+                    (payload.get("service_id"), payload.get("material_id"),
+                     payload.get("required_quantity"), payload.get("observed_at"),
+                     payload.get("source_type")),
+                )
+            elif kind == "transport":
+                conn.execute(
+                    "INSERT INTO transport_observations "
+                    "(transport_id, availability, capacity, observed_at, source_type) "
+                    "VALUES (?,?,?,?,?)",
+                    (payload.get("transport_id"), payload.get("availability"),
+                     payload.get("capacity"), payload.get("observed_at"),
+                     payload.get("source_type")),
+                )
+            else:
+                return  # 未知类型不落库
+
+            conn.execute(
+                "INSERT INTO evidence "
+                "(evidence_type, source_id, status, value_json, observed_at, retrieved_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (kind, obj_id, "ok", json.dumps(payload, ensure_ascii=False),
+                 payload.get("observed_at"), datetime.now().isoformat(timespec="seconds")),
+            )
+            conn.commit()
+        finally:
+            db.close_conn(conn)
+    except (sqlite3.Error, KeyError, TypeError) as exc:
+        logger.warning("persist %s/%s failed: %s", kind, obj_id, exc)
