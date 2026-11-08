@@ -92,13 +92,28 @@ def _on_connect_fail(client, userdata):
 
 
 def _on_message(client, userdata, msg):
+    # 接收/解析异常 (任务-独立): 只落一条 status=unavailable 的 evidence,
+    # 不更新内存状态、不写业务观测表、不触发告警。正常路径逻辑保持不变。
+    raw_text = None
     try:
-        payload = json.loads(msg.payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raw_text = msg.payload.decode("utf-8")
+        payload = json.loads(raw_text)
+        if not isinstance(payload, dict):
+            raise ValueError("payload is not a JSON object")
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         logger.warning("discarding unparsable message %s: %s", msg.topic, exc)
+        _persist_unavailable_evidence(
+            msg.topic,
+            raw_text if raw_text is not None else repr(msg.payload),
+            exc,
+        )
         return
 
     parts = msg.topic.split("/")
+    if len(parts) < 4:
+        logger.warning("discarding message with bad topic %s", msg.topic)
+        _persist_unavailable_evidence(msg.topic, raw_text, ValueError("bad topic"))
+        return
     kind, obj_id = parts[2], parts[3]
     if kind == "reserve":
         _update_material_state(CURRENT_STATE["reserves"], obj_id, payload)
@@ -108,6 +123,8 @@ def _on_message(client, userdata, msg):
         CURRENT_STATE["transports"][obj_id] = payload
     else:
         logger.warning("unknown topic kind %s, ignored", msg.topic)
+        _persist_unavailable_evidence(msg.topic, raw_text, ValueError("unknown topic kind"))
+        return
     CURRENT_STATE["updated_at"] = datetime.now().isoformat(timespec="seconds")
     _recompute_alerts()
     _persist_observation(kind, obj_id, payload)
@@ -259,6 +276,32 @@ def _recompute_alerts():
 # ---- 落库 (任务2-2) ----
 # evidence_type 按任务2-2需求: stock / demand / transport
 _EVIDENCE_TYPE_MAP = {"reserve": "stock", "service": "demand", "transport": "transport"}
+
+
+def _persist_unavailable_evidence(topic: str, raw_text: str, exc: Exception):
+    """接收/解析失败 → 只落一条 status=unavailable 的 evidence (不动内存与业务表)。
+
+    evidence_type 尽量从 topic 推断, 推断不出用 unknown; source_id 同理, 保底用整条 topic。
+    """
+    parts = topic.split("/")
+    kind, source_id = (parts[2], parts[3]) if len(parts) >= 4 else (None, None)
+    evidence_type = _EVIDENCE_TYPE_MAP.get(kind, "unknown")
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        conn = db.get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO evidence "
+                "(evidence_type, source_id, status, value_json, observed_at, retrieved_at, error_message) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (evidence_type, source_id or topic, "unavailable", raw_text or "",
+                 now, now, "%s: %s" % (type(exc).__name__, exc)),
+            )
+            conn.commit()
+        finally:
+            db.close_conn(conn)
+    except sqlite3.Error as db_exc:
+        logger.warning("persist unavailable evidence failed: %s", db_exc)
 
 def _persist_observation(kind: str, obj_id: str, payload: dict):
     """每条消息写一条观测记录 + 一条 status=ok 的 evidence。
