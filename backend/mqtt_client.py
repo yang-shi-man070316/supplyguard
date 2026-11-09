@@ -36,6 +36,7 @@ TOPICS = [
     ("nova/bb03/reserve/+/stock", 1),
     ("nova/bb03/service/+/demand", 1),
     ("nova/bb03/transport/+/status", 1),
+    ("nova/bb03/reserve/+/receipt", 1),  # 任务-独立: 回执报文
 ]
 
 # 每个对象只保留最新一条状态, 不保存历史
@@ -115,6 +116,10 @@ def _on_message(client, userdata, msg):
         _persist_unavailable_evidence(msg.topic, raw_text, ValueError("bad topic"))
         return
     kind, obj_id = parts[2], parts[3]
+    # 任务-独立: 回执 topic (5段) 先于 stock 分支分流, 原有分支逻辑不动
+    if kind == "reserve" and len(parts) == 5 and parts[4] == "receipt":
+        _handle_receipt(obj_id, payload)
+        return
     if kind == "reserve":
         _update_material_state(CURRENT_STATE["reserves"], obj_id, payload)
     elif kind == "service":
@@ -135,6 +140,63 @@ def _update_material_state(bucket: dict, obj_id: str, payload: dict):
     material_id = payload.get("material_id", "?")
     node = bucket.setdefault(obj_id, {"materials": {}})
     node["materials"][material_id] = payload
+
+
+# ---- 回执处理 (任务-独立: 去重 + 库存变更) ----
+_processed_receipt_ids = set()  # 内存去重快路径, 库 receipt_id 主键为准 (重启后仍兜底)
+
+
+def _handle_receipt(reserve_id: str, payload: dict):
+    """回执报文: 一条 receipt_id 只生效一次。
+
+    INSERT OR IGNORE 原子去重: rowcount=1 (首次) 才应用库存变更;
+    重复回执只记日志, 不改库存、不新增行。写库失败不应用变更 (下次重推可再插)。
+    """
+    receipt_id = payload.get("receipt_id")
+    if not receipt_id:
+        logger.warning("receipt without receipt_id, ignored")
+        return
+    if receipt_id in _processed_receipt_ids:
+        logger.warning("duplicate receipt %s, ignored", receipt_id)
+        return
+
+    material_id = payload.get("material_id")
+    quantity_change = payload.get("quantity_change", 0)
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        conn = db.get_conn()
+        try:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO receipt_records "
+                "(receipt_id, reserve_id, material_id, quantity_change, received_at) "
+                "VALUES (?,?,?,?,?)",
+                (receipt_id, reserve_id, material_id, quantity_change, now),
+            )
+            applied = cur.rowcount == 1
+            conn.commit()
+        finally:
+            db.close_conn(conn)
+    except sqlite3.Error as exc:
+        logger.warning("persist receipt %s failed: %s", receipt_id, exc)
+        return  # 无回执记录则视为未收到, 不应用变更
+
+    _processed_receipt_ids.add(receipt_id)
+    if not applied:
+        logger.warning("duplicate receipt %s, ignored", receipt_id)
+        return
+
+    # 首次生效: 更新内存库存基线 (无基线时记日志, 不凭空造库存)
+    item = (
+        CURRENT_STATE["reserves"].get(reserve_id, {}).get("materials", {}).get(material_id)
+    )
+    if item is None:
+        logger.warning("receipt %s recorded but no stock baseline for %s/%s",
+                       receipt_id, reserve_id, material_id)
+    else:
+        item["quantity"] = max(item.get("quantity", 0) + quantity_change, 0)
+    CURRENT_STATE["updated_at"] = now
+    _recompute_alerts()  # 库存变化后重算告警 (复用现有逻辑)
+    logger.info("receipt %s applied: %s/%s %+d", receipt_id, reserve_id, material_id, quantity_change)
 
 
 # ---- 告警计算 ----

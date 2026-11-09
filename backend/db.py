@@ -60,6 +60,21 @@ CREATE TABLE IF NOT EXISTS alert_records (
     message TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS receipt_records (
+    receipt_id TEXT PRIMARY KEY,
+    reserve_id TEXT NOT NULL,
+    material_id TEXT NOT NULL,
+    quantity_change INTEGER NOT NULL,
+    received_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','completed')),
+    payload TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT
+);
 """
 
 

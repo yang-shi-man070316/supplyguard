@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 
 from mqtt_client import ALERTS, CURRENT_STATE, start_mqtt, stop_mqtt
 from db import get_conn, close_conn
+from run_store import complete_run, create_run, get_run, list_runs, update_run
 
 DB = Path(__file__).parent / "supplyguard.db"
 FRONTEND = Path(__file__).parent.parent / "frontend"
@@ -475,6 +476,46 @@ def sign(shipment_id: str, ok: bool = True):
 def reset():
     init_db()
     return {"ok": True, "msg": "演练数据已重置"}
+
+
+@app.post("/api/runs")
+def runs_create(run_id: str, payload: dict = None):
+    """独立任务: 新增 run (status=pending)."""
+    ok, msg = create_run(run_id, payload)
+    return {"ok": ok, "msg": msg}
+
+
+@app.get("/api/runs")
+def runs_list():
+    """独立任务: 全部 run 列表 (任意状态可读)."""
+    return {"runs": list_runs()}
+
+
+@app.get("/api/runs/{run_id}")
+def runs_get(run_id: str):
+    """独立任务: 查询单个 run (任意状态可读)."""
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run %s not found" % run_id)
+    return run
+
+
+@app.put("/api/runs/{run_id}")
+def runs_update(run_id: str, payload: dict):
+    """独立任务: 更新 run 内容。completed 的 run 拒绝修改 (409)."""
+    ok, msg = update_run(run_id, payload)
+    if not ok:
+        raise HTTPException(status_code=409, detail=msg)
+    return {"ok": True, "msg": msg}
+
+
+@app.post("/api/runs/{run_id}/complete")
+def runs_complete(run_id: str):
+    """独立任务: 将 run 标记为 completed。之后不可再修改."""
+    ok, msg = complete_run(run_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail=msg)
+    return {"ok": True, "msg": msg}
 
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND)), name="static")
