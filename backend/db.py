@@ -1,9 +1,9 @@
-"""B-B03 阶段02 任务2-1: SQLite 数据库初始化与基础连接工具.
+"""B-B03 数据库初始化与基础连接工具.
 
-只负责建表和连接管理, 不包含任何业务 CRUD / 插入逻辑 (留给后续 2-2 及以后)。
+只负责建表和连接管理, 不包含任何业务 CRUD / 插入逻辑。
 
 被 main.py import 时自动执行建表 (main.py 仅新增一行 import db),
-启动 uvicorn 即生成数据库文件 bb03.db 及 5 张数据表。
+启动 uvicorn 即生成数据库文件 bb03.db (阶段02 7张表 + 阶段03板块1 4张表)。
 """
 
 import sqlite3
@@ -74,6 +74,43 @@ CREATE TABLE IF NOT EXISTS runs (
     payload TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at TEXT
+);
+
+-- ============================================================
+-- 阶段03 板块1: 任务/依赖检查/任务结果存储 (仅建表, 无业务逻辑)
+-- 说明: runs 表阶段02已存在(旧规格 status pending/completed),
+-- 本板块按约定不重建; 阶段03新 runs 规格(run_status
+-- running/completed/error 等)的合并方案留待后续板块。
+-- 规则备忘: run_status=completed 的 run 后续业务层不允许修改。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS task_definitions (
+    task_id TEXT PRIMARY KEY,
+    task_name TEXT NOT NULL,
+    task_desc TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS dependency_definitions (
+    dep_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    dep_name TEXT NOT NULL,
+    dep_desc TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS dependency_checks (
+    check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    dep_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('satisfied','unsatisfied','unknown')),
+    check_msg TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS task_results (
+    result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('established','blocked','pending_verification','unknown')),
+    result_msg TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 """
 
