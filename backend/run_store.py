@@ -63,10 +63,15 @@ def get_run(run_id: str):
 
 
 def list_runs() -> list:
-    """全部 run 列表 (任意状态均可读)。"""
+    """全部 run 列表 (任意状态均可读), 按 created_at 倒序 (新在前)。
+
+    同秒创建的 run 用 rowid 倒序兜底, 保证结果稳定。
+    """
     conn = get_conn()
     try:
-        rows = conn.execute("SELECT * FROM runs ORDER BY created_at").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM runs ORDER BY created_at DESC, rowid DESC"
+        ).fetchall()
     finally:
         close_conn(conn)
     return [_row_to_dict(r) for r in rows]

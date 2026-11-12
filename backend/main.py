@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -491,22 +491,74 @@ def runs_list():
     return {"runs": list_runs()}
 
 
+def _err_code(msg: str) -> int:
+    """run_store 错误消息 → 统一响应 code (404 不存在 / 409 冲突 / 500 其他)."""
+    if "not found" in msg:
+        return 404
+    if "completed" in msg or "already exists" in msg:
+        return 409
+    return 500
+
+
+@app.post("/api/runs/create")
+async def runs_create(request: Request, run_id: str = None):
+    """B-B03 阶段03板块2: 创建 run (status=pending)。
+
+    run_id 来源: query 参数优先, 其次 JSON body 的 run_id 字段;
+    payload: body 的 payload 字段; body 无 run_id/payload 字段时整包视为 payload。
+    run_id 缺失返回 code=400, 重复返回 code=409。
+    """
+    data = {}
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            data = body
+    except Exception:
+        pass
+    if run_id is None:
+        run_id = data.get("run_id")
+    if "payload" in data:
+        payload = data.get("payload")
+    elif "run_id" in data:
+        payload = None
+    else:
+        payload = data or None  # 兼容旧用法: body 即 payload
+    if not run_id:
+        return {"code": 400, "msg": "run_id required", "data": None}
+    ok, msg = create_run(run_id, payload)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": get_run(run_id)}
+
+
+@app.get("/api/runs/list")
+def runs_list():
+    """B-B03 阶段03板块2: 全部 run 列表 (按 created_at 倒序)。
+
+    注意: 必须声明在 /api/runs/{run_id} 之前, 避免 "list" 被路径参数劫持。
+    """
+    return {"code": 0, "msg": "ok", "data": list_runs()}
+
+
 @app.get("/api/runs/{run_id}")
 def runs_get(run_id: str):
-    """独立任务: 查询单个 run (任意状态可读)."""
+    """B-B03 阶段03板块2: 查询单个 run (任意状态可读)。"""
     run = get_run(run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail="run %s not found" % run_id)
-    return run
+        return {"code": 404, "msg": "run %s not found" % run_id, "data": None}
+    return {"code": 0, "msg": "ok", "data": run}
 
 
 @app.put("/api/runs/{run_id}")
 def runs_update(run_id: str, payload: dict):
-    """独立任务: 更新 run 内容。completed 的 run 拒绝修改 (409)."""
+    """B-B03 阶段03板块2: 更新 run。completed 拒绝修改 (409, 数据库不变)。
+
+    拒绝由 run_store.update_run 的 SQL where status='pending' 原子控制。
+    """
     ok, msg = update_run(run_id, payload)
     if not ok:
-        raise HTTPException(status_code=409, detail=msg)
-    return {"ok": True, "msg": msg}
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": get_run(run_id)}
 
 
 @app.post("/api/runs/{run_id}/complete")
