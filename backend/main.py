@@ -33,8 +33,10 @@ from run_store import (
     create_run,
     get_run,
     list_runs,
+    run_all_tasks_check,
     run_t1_check,
     seed_t1_meta,
+    seed_t2t5_meta,
     update_run,
 )
 
@@ -44,7 +46,8 @@ FRONTEND = Path(__file__).parent.parent / "frontend"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    seed_t1_meta()  # 阶段03板块3: T1 任务/依赖定义种子数据 (幂等)
+    seed_t1_meta()   # 阶段03板块3: T1 任务/依赖定义种子数据 (幂等)
+    seed_t2t5_meta() # 阶段03板块4: T2~T5 任务/依赖定义种子数据 (幂等)
     start_mqtt()  # 连接失败只打警告, 不阻塞启动
     yield
     stop_mqtt()
@@ -587,6 +590,18 @@ def runs_check_t1(run_id: str):
     completed 返回 code=409 (数据库原子控制), 不存在返回 404。
     """
     ok, msg, data = run_t1_check(run_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": data}
+
+
+@app.post("/api/runs/{run_id}/check-all")
+def runs_check_all(run_id: str):
+    """B-B03 阶段03板块4: 串行执行 T1~T5 全套依赖校验并落库。
+
+    复用板块3框架与原子 pending 保护; completed 返回 409, 不存在返回 404。
+    """
+    ok, msg, data = run_all_tasks_check(run_id)
     if not ok:
         return {"code": _err_code(msg), "msg": msg, "data": None}
     return {"code": 0, "msg": msg, "data": data}
