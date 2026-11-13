@@ -36,6 +36,7 @@ from run_store import (
     list_runs,
     run_all_tasks_check,
     run_t1_check,
+    run_whatif_once,
     seed_t1_meta,
     seed_t2t5_meta,
     update_run,
@@ -603,6 +604,32 @@ def runs_check_all(run_id: str):
     复用板块3框架与原子 pending 保护; completed 返回 409, 不存在返回 404。
     """
     ok, msg, data = run_all_tasks_check(run_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": data}
+
+
+@app.post("/api/runs/{run_id}/whatif-once")
+async def runs_whatif_once(run_id: str, request: Request):
+    """B-B03 阶段04板块2: 一次性 what-if 推演 (纯内存, 结果不落库)。
+
+    body: {"hypothesis_list": [...]} (假设结构与 /api/debug/build-hypo-view 一致);
+    run 必须 pending: completed → code=409, 不存在 → code=404, 非法假设 → code=400。
+    data 结构对齐 /check-all: {run_id, tasks:[{task_id, task_status, task_msg, deps:[...]}]},
+    便于与 reality 研判结果逐项对比。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"code": 400, "msg": "invalid JSON body", "data": None}
+    if not isinstance(body, dict) or "hypothesis_list" not in body:
+        return {"code": 400, "msg": "hypothesis_list required", "data": None}
+    try:
+        ok, msg, data = run_whatif_once(run_id, body["hypothesis_list"])
+    except ValueError as exc:
+        return {"code": 400, "msg": str(exc), "data": None}
+    except sqlite3.Error as exc:
+        return {"code": 500, "msg": "db error: %s" % exc, "data": None}
     if not ok:
         return {"code": _err_code(msg), "msg": msg, "data": None}
     return {"code": 0, "msg": msg, "data": data}

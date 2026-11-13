@@ -191,17 +191,19 @@ def _latest_stock_totals(conn) -> dict:
     return totals
 
 
-def _check_dep_t1d1(conn) -> tuple:
+def _check_dep_t1d1(src) -> tuple:
     """T1-D1 判断: 每个服务点每种物资的当期需求 ≤ 全网该物资库存。
 
+    src 为证据源: sqlite3.Connection (reality, 读证据表, 行为不变) 或
+    _ViewEvidence (阶段04板块2 what-if, 读合成视图)。
     返回 (status, msg), status ∈ satisfied / unsatisfied / unknown。
     无任何需求观测判 unknown; 某物资无库存观测按库存 0 计 (与阶段02
     缺口语义一致: 缺口 = 需求 − 全网该物资库存)。
     """
-    demands = _latest_demands(conn)
+    demands = _src_latest_demands(src)
     if not demands:
         return "unknown", "无服务点需求观测记录, 无法判断"
-    stocks = _latest_stock_totals(conn)
+    stocks = _src_latest_stock_totals(src)
     shortfalls = []
     ok_count = 0
     for d in demands:
@@ -420,17 +422,13 @@ def _parse_ts(value):
         return None
 
 
-def _check_dep_t2d1(conn) -> tuple:
+def _check_dep_t2d1(src) -> tuple:
     """T2-D1: 至少存在一个最新状态 AVAILABLE/IN_TRANSIT 的运输资源。
 
+    src 同 _check_dep_t1d1 (连接或合成视图)。
     全部 FAULT → unsatisfied; 无运输观测 → unknown。
     """
-    rows = conn.execute(
-        "SELECT transport_id, availability FROM transport_observations t "
-        "WHERE t.observation_id = ("
-        "  SELECT MAX(t2.observation_id) FROM transport_observations t2 "
-        "  WHERE t2.transport_id = t.transport_id)"
-    ).fetchall()
+    rows = _src_latest_transports(src)
     if not rows:
         return "unknown", "无运输资源观测记录, 无法判断"
     usable = [r["transport_id"] for r in rows
@@ -448,23 +446,23 @@ def _check_dep_t2d1(conn) -> tuple:
     return "unknown", "运输资源状态值无法识别: %s" % ", ".join(others)
 
 
-def _check_dep_t3d1(conn) -> tuple:
+def _check_dep_t3d1(src) -> tuple:
     """T3-D1: 每项最新需求提出后, 存在运输观测/签收活动响应。
 
-    库中无调度计划(dispatch)证据表且约束禁止新增表, 以"需求观测时间之后
-    存在运输或签收活动"作为调度响应时效的代理判断, 不做 what-if 推演;
-    需求时间不可解析判 unknown。
+    src 同 _check_dep_t1d1 (连接或合成视图)。库中无调度计划(dispatch)
+    证据表且约束禁止新增表, 以"需求观测时间之后存在运输或签收活动"作为
+    调度响应时效的代理判断; 需求时间不可解析判 unknown。
     """
-    demands = _latest_demands(conn)  # 复用板块3函数
+    demands = _src_latest_demands(src)
     if not demands:
         return "unknown", "无服务点需求观测记录, 无法判断"
     activity_ts = []
-    for row in conn.execute("SELECT observed_at FROM transport_observations"):
-        t = _parse_ts(row["observed_at"])
+    for ts in _src_transport_times(src):
+        t = _parse_ts(ts)
         if t is not None:
             activity_ts.append(t)
-    for row in conn.execute("SELECT received_at FROM receipt_records"):
-        t = _parse_ts(row["received_at"])
+    for ts in _src_receipt_times(src):
+        t = _parse_ts(ts)
         if t is not None:
             activity_ts.append(t)
     unverified, lagging = [], []
@@ -485,32 +483,24 @@ def _check_dep_t3d1(conn) -> tuple:
     return "satisfied", "全部%d项需求提出后均有运输/签收活动响应" % len(demands)
 
 
-def _check_dep_t4d1(conn) -> tuple:
+def _check_dep_t4d1(src) -> tuple:
     """T4-D1: 每条签收记录可对应到同储备点同物资的库存观测 (闭环核验);
-    存在在途运输时必须有签收记录支撑。"""
-    receipts = conn.execute(
-        "SELECT receipt_id, reserve_id, material_id FROM receipt_records"
-    ).fetchall()
-    in_transit = conn.execute(
-        "SELECT COUNT(*) c FROM transport_observations t "
-        "WHERE t.observation_id = ("
-        "  SELECT MAX(t2.observation_id) FROM transport_observations t2 "
-        "  WHERE t2.transport_id = t.transport_id) AND t.availability='IN_TRANSIT'"
-    ).fetchone()["c"]
+    存在在途运输时必须有签收记录支撑。
+
+    src 同 _check_dep_t1d1 (连接或合成视图); 合成视图不含签收证据,
+    receipts 恒为空。
+    """
+    receipts = _src_receipts(src)
+    in_transit = _src_in_transit_count(src)
     if not receipts:
         if in_transit:
             return "unsatisfied", ("存在%d个在途运输资源但无任何签收记录, "
                                    "无法闭环核验" % in_transit)
         return "unknown", "无签收记录且无在途运输, 依赖不适用"
-    broken = []
-    for r in receipts:
-        hit = conn.execute(
-            "SELECT 1 FROM stock_observations "
-            "WHERE reserve_id=? AND material_id=? LIMIT 1",
-            (r["reserve_id"], r["material_id"]),
-        ).fetchone()
-        if hit is None:
-            broken.append("%s (%s/%s)" % (r["receipt_id"], r["reserve_id"], r["material_id"]))
+    broken = [
+        "%s (%s/%s)" % b
+        for b in _src_receipt_stock_missing(src, receipts)
+    ]
     if broken:
         return "unsatisfied", "签收记录无法与库存观测闭环核验: " + "; ".join(broken)
     return "satisfied", "全部%d条签收记录均可与库存观测闭环核验" % len(receipts)
@@ -519,49 +509,22 @@ def _check_dep_t4d1(conn) -> tuple:
 _TIME_TOLERANCE = timedelta(seconds=60)  # 观测时间晚于落库时间的允许容差
 
 
-def _check_dep_t5d1(conn) -> tuple:
-    """T5-D1: 多源观测一致性 — 负值矛盾 / 运输状态非法值 / 时间线倒挂。"""
+def _check_dep_t5d1(src) -> tuple:
+    """T5-D1: 多源观测一致性 — 负值矛盾 / 运输状态非法值 / 时间线倒挂。
+
+    src 同 _check_dep_t1d1 (连接或合成视图); 合成视图无落库时间,
+    时间线倒挂恒为 0。
+    """
     conflicts = []
     total = 0
-    for table, col, label in (
-        ("stock_observations", "quantity", "库存"),
-        ("demand_records", "required_quantity", "需求"),
-        ("transport_observations", "capacity", "运输容量"),
-    ):
-        bad = conn.execute(
-            "SELECT COUNT(*) c FROM %s WHERE %s IS NOT NULL AND %s < 0"
-            % (table, col, col)
-        ).fetchone()["c"]
-        total += conn.execute(
-            "SELECT COUNT(*) c FROM %s" % table
-        ).fetchone()["c"]
+    for label, bad, count in _src_t5_negative_counts(src):
+        total += count
         if bad:
             conflicts.append("%s观测存在%d条负值记录" % (label, bad))
-    bad_states = conn.execute(
-        "SELECT DISTINCT availability FROM transport_observations "
-        "WHERE availability NOT IN ('AVAILABLE','IN_TRANSIT','FAULT')"
-    ).fetchall()
+    bad_states = _src_t5_bad_states(src)
     if bad_states:
-        conflicts.append("运输状态非法值: %s"
-                         % ", ".join(r["availability"] for r in bad_states))
-    inverted = 0
-    for table, obs_col in (
-        ("stock_observations", "observed_at"),
-        ("demand_records", "observed_at"),
-        ("transport_observations", "observed_at"),
-    ):
-        for row in conn.execute(
-            "SELECT %s AS o, created_at AS c FROM %s" % (obs_col, table)
-        ):
-            o, c = _parse_ts(row["o"]), _parse_ts(row["c"])
-            if o is not None and c is not None and o > c + _TIME_TOLERANCE:
-                inverted += 1
-    for row in conn.execute(
-        "SELECT received_at AS o, created_at AS c FROM receipt_records"
-    ):
-        o, c = _parse_ts(row["o"]), _parse_ts(row["c"])
-        if o is not None and c is not None and o > c + _TIME_TOLERANCE:
-            inverted += 1
+        conflicts.append("运输状态非法值: %s" % ", ".join(bad_states))
+    inverted = _src_t5_inverted(src)
     if inverted:
         conflicts.append("观测/签收时间晚于落库时间%d条 (超过容差)" % inverted)
     if total == 0 and not conflicts:
@@ -607,45 +570,8 @@ def run_all_tasks_check(run_id: str) -> tuple:
             if row["status"] != "pending":
                 return False, "run %s is completed, not modifiable" % run_id, None
 
-            tasks_out = []
-            for task_id in _ALL_TASK_IDS:
-                dep_rows = conn.execute(
-                    "SELECT dep_id FROM dependency_definitions "
-                    "WHERE task_id=? ORDER BY dep_id",
-                    (task_id,),
-                ).fetchall()
-                dep_results = []
-                for d in dep_rows:
-                    dep_id = d["dep_id"]
-                    checker = _ALL_TASK_CHECKERS.get(task_id, {}).get(dep_id)
-                    if checker is None:
-                        dep_results.append({
-                            "dep_id": dep_id, "status": "unknown",
-                            "check_msg": "依赖 %s 的判断逻辑未实现" % dep_id,
-                        })
-                    else:
-                        status, check_msg = checker(conn)
-                        dep_results.append(
-                            {"dep_id": dep_id, "status": status, "check_msg": check_msg}
-                        )
-                if not dep_results:
-                    dep_results.append({
-                        "dep_id": "-", "status": "unknown",
-                        "check_msg": "任务 %s 无依赖定义" % task_id,
-                    })
-                if any(r["status"] == "unsatisfied" for r in dep_results):
-                    task_status = "blocked"
-                elif all(r["status"] == "satisfied" for r in dep_results):
-                    task_status = "established"
-                else:
-                    task_status = "unknown"
-                task_msg = "; ".join(
-                    "%s:%s" % (r["dep_id"], r["status"]) for r in dep_results
-                )
-                tasks_out.append({
-                    "task_id": task_id, "task_status": task_status,
-                    "task_msg": task_msg, "deps": dep_results,
-                })
+            # 汇总循环提取到阶段04板块2 _collect_tasks (reality/what-if 共用, 行为不变)
+            tasks_out = _collect_tasks(conn, conn)
 
             # ---- 原子落库 (同一事务): 全部 dependency_checks + task_results ----
             new_check_ids, new_result_ids = [], []
@@ -919,4 +845,272 @@ def build_hypothesis_view(hypothesis_list: list) -> dict:
         "stock_view": stock_view,
         "demand_view": demand_view,
         "transport_view": transport_view,
+    }
+
+
+# ============================================================
+# B-B03 阶段04板块2: 一次性 what-if 推演 (纯内存, 结果不落库)
+#
+# 复用方式 (硬性约束: 不复制 T1~T5 判断代码):
+#   - 板块3/4 的 _check_dep_* 判断函数入参由 conn 泛化为 src:
+#     证据源可以是 sqlite3.Connection (reality, 原行为不变) 或
+#     _ViewEvidence (what-if, 读板块1合成视图), 取数经下方 _src_* 适配。
+#   - run_all_tasks_check 的汇总循环提取为 _collect_tasks(src, conn),
+#     reality 与 what-if 共用同一份任务/依赖汇总与状态聚合逻辑。
+#   - 本板块不写任何表: 不落 dependency_checks/task_results, 不 seed 元数据。
+# ============================================================
+
+class _ViewEvidence:
+    """合成视图证据源: 把 build_hypothesis_view 的视图包装成
+    T1~T5 判断函数可读的统一 src (另一个合法 src 是 sqlite3.Connection)。
+    """
+
+    def __init__(self, view: dict):
+        self.stock_view = view["stock_view"]
+        self.demand_view = view["demand_view"]
+        self.transport_view = view["transport_view"]
+
+
+def _src_latest_demands(src) -> list:
+    """每个 (service_id, material_id) 最新需求观测。连接走原查询, 视图直接给。"""
+    if isinstance(src, _ViewEvidence):
+        return src.demand_view
+    return _latest_demands(src)
+
+
+def _src_latest_stock_totals(src) -> dict:
+    """每个物资全网库存合计 (最新观测)。连接走原查询; 视图按物资求和。"""
+    if isinstance(src, _ViewEvidence):
+        totals = {}
+        for e in src.stock_view:
+            totals[e["material_id"]] = totals.get(e["material_id"], 0) + e["quantity"]
+        return totals
+    return _latest_stock_totals(src)
+
+
+def _src_latest_transports(src) -> list:
+    """每个 transport_id 最新运输观测。连接复用板块1 _latest_transports, 视图直接给。"""
+    if isinstance(src, _ViewEvidence):
+        return src.transport_view
+    return _latest_transports(src)
+
+
+def _src_transport_times(src) -> list:
+    """全部运输观测时间 (reality 含历史; 视图仅合成条目)。"""
+    if isinstance(src, _ViewEvidence):
+        return [e["observed_at"] for e in src.transport_view]
+    return [r["observed_at"]
+            for r in src.execute("SELECT observed_at FROM transport_observations")]
+
+
+def _src_receipt_times(src) -> list:
+    """全部签收时间。合成视图不含签收证据 → 恒空。"""
+    if isinstance(src, _ViewEvidence):
+        return []
+    return [r["received_at"]
+            for r in src.execute("SELECT received_at FROM receipt_records")]
+
+
+def _src_receipts(src) -> list:
+    """全部签收记录 (receipt_id/reserve_id/material_id)。视图不含签收 → 恒空。"""
+    if isinstance(src, _ViewEvidence):
+        return []
+    rows = src.execute(
+        "SELECT receipt_id, reserve_id, material_id FROM receipt_records"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _src_in_transit_count(src) -> int:
+    """最新状态为 IN_TRANSIT 的运输资源数 (原 T4-D1 口径)。"""
+    if isinstance(src, _ViewEvidence):
+        return sum(1 for e in src.transport_view
+                   if e["availability"] == "IN_TRANSIT")
+    return src.execute(
+        "SELECT COUNT(*) c FROM transport_observations t "
+        "WHERE t.observation_id = ("
+        "  SELECT MAX(t2.observation_id) FROM transport_observations t2 "
+        "  WHERE t2.transport_id = t.transport_id) AND t.availability='IN_TRANSIT'"
+    ).fetchone()["c"]
+
+
+def _src_receipt_stock_missing(src, receipts) -> list:
+    """无法与库存观测闭环的签收记录 [(receipt_id, reserve_id, material_id)]。
+
+    连接: 逐条查 stock_observations 存在性 (原 T4-D1 查询);
+    视图: 以合成 stock_view 的 (reserve, material) 键集合核验
+    (视图 receipts 恒空, 该分支为完备性兜底)。
+    """
+    if isinstance(src, _ViewEvidence):
+        keys = {(e["reserve_id"], e["material_id"]) for e in src.stock_view}
+        return [
+            (r["receipt_id"], r["reserve_id"], r["material_id"])
+            for r in receipts
+            if (r["reserve_id"], r["material_id"]) not in keys
+        ]
+    out = []
+    for r in receipts:
+        hit = src.execute(
+            "SELECT 1 FROM stock_observations "
+            "WHERE reserve_id=? AND material_id=? LIMIT 1",
+            (r["reserve_id"], r["material_id"]),
+        ).fetchone()
+        if hit is None:
+            out.append((r["receipt_id"], r["reserve_id"], r["material_id"]))
+    return out
+
+
+_T5_TABLES = (
+    ("stock_observations", "quantity", "库存"),
+    ("demand_records", "required_quantity", "需求"),
+    ("transport_observations", "capacity", "运输容量"),
+)
+
+
+def _src_t5_negative_counts(src) -> list:
+    """三表负值统计 [(label, bad, total), ...] (原 T5-D1 计数查询口径)。"""
+    if isinstance(src, _ViewEvidence):
+        series = (
+            ("库存", [e["quantity"] for e in src.stock_view]),
+            ("需求", [e["required_quantity"] for e in src.demand_view]),
+            ("运输容量", [e["capacity"] for e in src.transport_view]),
+        )
+        return [
+            (label, sum(1 for v in vals if v is not None and v < 0), len(vals))
+            for label, vals in series
+        ]
+    out = []
+    for table, col, label in _T5_TABLES:
+        bad = src.execute(
+            "SELECT COUNT(*) c FROM %s WHERE %s IS NOT NULL AND %s < 0"
+            % (table, col, col)
+        ).fetchone()["c"]
+        count = src.execute("SELECT COUNT(*) c FROM %s" % table).fetchone()["c"]
+        out.append((label, bad, count))
+    return out
+
+
+def _src_t5_bad_states(src) -> list:
+    """非法运输状态值列表 (原 T5-D1 DISTINCT 口径)。"""
+    if isinstance(src, _ViewEvidence):
+        return [e["availability"] for e in src.transport_view
+                if e["availability"] not in _TRANSPORT_STATES]
+    rows = src.execute(
+        "SELECT DISTINCT availability FROM transport_observations "
+        "WHERE availability NOT IN ('AVAILABLE','IN_TRANSIT','FAULT')"
+    ).fetchall()
+    return [r["availability"] for r in rows]
+
+
+def _src_t5_inverted(src) -> int:
+    """观测/签收时间晚于落库时间的行数。合成视图无落库时间 → 恒为 0。"""
+    if isinstance(src, _ViewEvidence):
+        return 0
+    inverted = 0
+    for table, obs_col in (
+        ("stock_observations", "observed_at"),
+        ("demand_records", "observed_at"),
+        ("transport_observations", "observed_at"),
+    ):
+        for row in src.execute(
+            "SELECT %s AS o, created_at AS c FROM %s" % (obs_col, table)
+        ):
+            o, c = _parse_ts(row["o"]), _parse_ts(row["c"])
+            if o is not None and c is not None and o > c + _TIME_TOLERANCE:
+                inverted += 1
+    for row in src.execute(
+        "SELECT received_at AS o, created_at AS c FROM receipt_records"
+    ):
+        o, c = _parse_ts(row["o"]), _parse_ts(row["c"])
+        if o is not None and c is not None and o > c + _TIME_TOLERANCE:
+            inverted += 1
+    return inverted
+
+
+def _collect_tasks(src, conn) -> list:
+    """以 src 为证据源执行全套 T1~T5 判断并汇总 (原 run_all_tasks_check 逻辑提取)。
+
+    conn 仅用于读取依赖元数据定义 (dependency_definitions), 不写任何表。
+    状态聚合沿用约定: 依赖 unsatisfied/unknown/satisfied 按任一 unsatisfied
+    → blocked / 全部 satisfied → established / 其余 unknown。
+    返回 [{"task_id","task_status","task_msg","deps":[{"dep_id","status","check_msg"}]}]。
+    """
+    tasks_out = []
+    for task_id in _ALL_TASK_IDS:
+        dep_rows = conn.execute(
+            "SELECT dep_id FROM dependency_definitions "
+            "WHERE task_id=? ORDER BY dep_id",
+            (task_id,),
+        ).fetchall()
+        dep_results = []
+        for d in dep_rows:
+            dep_id = d["dep_id"]
+            checker = _ALL_TASK_CHECKERS.get(task_id, {}).get(dep_id)
+            if checker is None:
+                dep_results.append({
+                    "dep_id": dep_id, "status": "unknown",
+                    "check_msg": "依赖 %s 的判断逻辑未实现" % dep_id,
+                })
+            else:
+                status, check_msg = checker(src)
+                dep_results.append(
+                    {"dep_id": dep_id, "status": status, "check_msg": check_msg}
+                )
+        if not dep_results:
+            dep_results.append({
+                "dep_id": "-", "status": "unknown",
+                "check_msg": "任务 %s 无依赖定义" % task_id,
+            })
+        if any(r["status"] == "unsatisfied" for r in dep_results):
+            task_status = "blocked"
+        elif all(r["status"] == "satisfied" for r in dep_results):
+            task_status = "established"
+        else:
+            task_status = "unknown"
+        task_msg = "; ".join(
+            "%s:%s" % (r["dep_id"], r["status"]) for r in dep_results
+        )
+        tasks_out.append({
+            "task_id": task_id, "task_status": task_status,
+            "task_msg": task_msg, "deps": dep_results,
+        })
+    return tasks_out
+
+
+def run_whatif_once(run_id: str, hypothesis_list: list) -> tuple:
+    """一次性 what-if 推演: 合成视图上跑 T1~T5 全套校验, 纯内存不落库。
+
+    流程:
+      ① run 状态校验: 不存在 → (False, "... not found") 404 语义;
+         非 pending → (False, "... completed ...") 409 语义
+      ② build_hypothesis_view 合成视图 (非法假设抛 ValueError, 接口层转 400)
+      ③ 同一套 _check_dep_* 判断函数 + _collect_tasks, 证据源换成合成视图
+      ④ 组装返回; 不写 dependency_checks/task_results, 不写任何表
+
+    返回 (ok, msg, data); data 结构对齐 run_all_tasks_check:
+        {run_id, tasks:[{task_id, task_status, task_msg, deps:[{dep_id,status,check_msg}]}]}
+    """
+    try:
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return False, "run %s not found" % run_id, None
+            if row["status"] != "pending":
+                return False, "run %s is completed, not modifiable" % run_id, None
+
+            view = build_hypothesis_view(hypothesis_list)
+            tasks_out = _collect_tasks(_ViewEvidence(view), conn)
+        finally:
+            close_conn(conn)
+    except sqlite3.Error as exc:
+        return False, "db error: %s" % exc, None
+    return True, "whatif evaluated", {
+        "run_id": run_id,
+        "tasks": [
+            {k: t[k] for k in ("task_id", "task_status", "task_msg", "deps")}
+            for t in tasks_out
+        ],
     }
