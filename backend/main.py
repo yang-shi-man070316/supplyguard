@@ -30,17 +30,22 @@ from mqtt_client import ALERTS, CURRENT_STATE, start_mqtt, stop_mqtt
 from db import get_conn, close_conn
 from run_store import (
     build_hypothesis_view,
+    compare_reality_vs_whatif,
     complete_run,
     create_run,
     create_scenario,
     delete_scenario,
+    delete_whatif_snapshot,
     get_run,
     get_scenario,
+    get_whatif_snapshot,
     list_runs,
     list_scenarios,
+    list_whatif_snapshots,
     run_all_tasks_check,
     run_t1_check,
     run_whatif_once,
+    save_whatif_snapshot,
     seed_t1_meta,
     seed_t2t5_meta,
     update_run,
@@ -707,6 +712,110 @@ def scenarios_delete(scenario_id: str):
     if not ok:
         return {"code": _err_code(msg), "msg": msg, "data": None}
     return {"code": 0, "msg": msg, "data": None}
+
+
+@app.post("/api/runs/{run_id}/whatif-once-and-save")
+async def runs_whatif_once_and_save(run_id: str, request: Request):
+    """B-B03 阶段04板块4: 一次性 what-if 推演并归档快照。
+
+    body 二选一 hypothesis_list / scenario_id (规则同 whatif-once), 另加:
+        snapshot_name (必填), snapshot_description (可选)
+    流程: 先执行 what-if 推演 (run 必须 pending: completed → 409, 不存在 → 404),
+    成功后自动保存快照 (snapshot_id 服务端生成; 同 run 下同名快照覆盖)。
+    返回 {snapshot_id, scenario_id, snapshot_name, run_id, tasks}。
+    快照仅归档, 后续推演仍实时计算, 不读取快照结果当输入。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"code": 400, "msg": "invalid JSON body", "data": None}
+    if not isinstance(body, dict):
+        return {"code": 400, "msg": "body must be an object", "data": None}
+    has_hypo = body.get("hypothesis_list") is not None
+    has_scenario = body.get("scenario_id") is not None
+    if has_hypo and has_scenario:
+        return {"code": 400, "msg": "hypothesis_list and scenario_id are mutually exclusive",
+                "data": None}
+    if not has_hypo and not has_scenario:
+        return {"code": 400, "msg": "hypothesis_list or scenario_id required", "data": None}
+    snapshot_name = body.get("snapshot_name")
+    if snapshot_name is None or not str(snapshot_name).strip():
+        return {"code": 400, "msg": "snapshot_name required", "data": None}
+
+    hypothesis_list = body.get("hypothesis_list")
+    scenario_id = None
+    if has_scenario:
+        scenario = get_scenario(body["scenario_id"])
+        if scenario is None or scenario["run_id"] != run_id:
+            return {"code": 404, "msg": "scenario %s not found for run %s"
+                    % (body["scenario_id"], run_id), "data": None}
+        scenario_id = scenario["scenario_id"]
+        hypothesis_list = scenario["hypothesis_list"]
+
+    try:
+        ok, msg, data = run_whatif_once(run_id, hypothesis_list)
+    except ValueError as exc:
+        return {"code": 400, "msg": str(exc), "data": None}
+    except sqlite3.Error as exc:
+        return {"code": 500, "msg": "db error: %s" % exc, "data": None}
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+
+    # 推演成功 → 归档快照
+    snapshot_id = uuid.uuid4().hex
+    try:
+        ok, msg = save_whatif_snapshot(
+            snapshot_id, run_id, scenario_id, str(snapshot_name),
+            body.get("snapshot_description"), hypothesis_list, data,
+        )
+    except ValueError as exc:
+        return {"code": 400, "msg": str(exc), "data": None}
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    data_out = dict(data)
+    data_out["snapshot_id"] = snapshot_id
+    data_out["scenario_id"] = scenario_id
+    data_out["snapshot_name"] = str(snapshot_name)
+    return {"code": 0, "msg": "whatif evaluated and snapshot saved", "data": data_out}
+
+
+@app.get("/api/runs/{run_id}/whatif-snapshots")
+def whatif_snapshots_list(run_id: str):
+    """B-B03 阶段04板块4: 列出该 run 下全部推演快照 (created_at 倒序)。"""
+    return {"code": 0, "msg": "ok", "data": list_whatif_snapshots(run_id)}
+
+
+@app.get("/api/whatif-snapshots/{snapshot_id}")
+def whatif_snapshot_get(snapshot_id: str):
+    """B-B03 阶段04板块4: 查询单条快照。不存在返回 code=404。"""
+    snap = get_whatif_snapshot(snapshot_id)
+    if snap is None:
+        return {"code": 404, "msg": "snapshot %s not found" % snapshot_id, "data": None}
+    return {"code": 0, "msg": "ok", "data": snap}
+
+
+@app.delete("/api/whatif-snapshots/{snapshot_id}")
+def whatif_snapshot_delete(snapshot_id: str):
+    """B-B03 阶段04板块4: 删除快照。不存在返回 code=404。"""
+    ok, msg = delete_whatif_snapshot(snapshot_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": None}
+
+
+@app.get("/api/whatif-snapshots/{snapshot_id}/compare")
+def whatif_snapshot_compare(snapshot_id: str):
+    """B-B03 阶段04板块4: 快照 vs 该 run 最近一次 check-all 真实研判, 差异报告。
+
+    只读 task_results/dependency_checks; 快照不存在 → code=404。
+    """
+    snap = get_whatif_snapshot(snapshot_id)
+    if snap is None:
+        return {"code": 404, "msg": "snapshot %s not found" % snapshot_id, "data": None}
+    ok, msg, data = compare_reality_vs_whatif(snap["run_id"], snapshot_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": data}
 
 
 @app.post("/api/debug/build-hypo-view")

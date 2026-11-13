@@ -1240,3 +1240,263 @@ def delete_scenario(scenario_id) -> tuple:
     if cur.rowcount == 0:
         return False, "scenario %s not found" % scenario_id
     return True, "deleted"
+
+
+# ============================================================
+# B-B03 阶段04板块4: what-if 推演快照归档 + 真实研判差异对比
+# 快照只归档查阅: 保存推演当时的 hypothesis_list + result_json;
+# 后续推演依然实时计算 (板块2), 绝不把快照 result_json 当输入。
+# 对比只读 task_results / dependency_checks (最近一次 check-all)。
+# ============================================================
+
+def _snapshot_row_to_dict(row) -> dict:
+    d = dict(row)
+    for key in ("hypothesis_list", "result_json"):
+        if d.get(key):
+            try:
+                d[key] = json.loads(d[key])
+            except json.JSONDecodeError:
+                pass  # 保留原文 (防御脏数据)
+    return d
+
+
+def save_whatif_snapshot(snapshot_id, run_id, scenario_id, name, description=None,
+                         hypothesis_list=None, result_json=None) -> tuple:
+    """保存 what-if 推演快照 (幂等, 同名覆盖)。
+
+    - snapshot_id/run_id/name 必填非空; hypothesis_list 须为对象列表,
+      result_json 须为对象 (全套 T1~T5 结果), 否则抛 ValueError (接口层 400);
+    - 同 snapshot_id 再存 → 更新该行 (含 run_id/scenario_id/name);
+    - 同 run_id 下 name 已被其他快照占用: 新增路径 → 覆盖旧快照;
+      更新改名路径 → 拒绝 (409 语义)。
+    created_at 为最近一次保存时间。返回 (ok, msg), msg ∈ created/updated。
+    """
+    if snapshot_id is None or not str(snapshot_id).strip():
+        raise ValueError("snapshot_id required")
+    if run_id is None or not str(run_id).strip():
+        raise ValueError("run_id required")
+    if name is None or not str(name).strip():
+        raise ValueError("name required")
+    if not isinstance(hypothesis_list, list) or any(
+        not isinstance(h, dict) for h in hypothesis_list
+    ):
+        raise ValueError("hypothesis_list must be a list of objects")
+    if not isinstance(result_json, dict):
+        raise ValueError("result_json must be an object")
+    snapshot_id, run_id, name = str(snapshot_id), str(run_id), str(name)
+    hpayload = json.dumps(hypothesis_list, ensure_ascii=False)
+    rpayload = json.dumps(result_json, ensure_ascii=False)
+    try:
+        conn = get_conn()
+        try:
+            existing = conn.execute(
+                "SELECT 1 FROM hypothesis_result_snapshot WHERE snapshot_id=?",
+                (snapshot_id,),
+            ).fetchone()
+            if existing is not None:
+                conn.execute(
+                    "UPDATE hypothesis_result_snapshot "
+                    "SET run_id=?, scenario_id=?, name=?, description=?, "
+                    "hypothesis_list=?, result_json=?, created_at=? "
+                    "WHERE snapshot_id=?",
+                    (run_id, scenario_id, name, description, hpayload, rpayload,
+                     _now(), snapshot_id),
+                )
+                conn.commit()
+                return True, "updated"
+            # 同名覆盖: 删除同 (run_id, name) 旧行后插入新行 (同一事务)
+            conn.execute(
+                "DELETE FROM hypothesis_result_snapshot WHERE run_id=? AND name=?",
+                (run_id, name),
+            )
+            conn.execute(
+                "INSERT INTO hypothesis_result_snapshot "
+                "(snapshot_id, run_id, scenario_id, name, description, "
+                "hypothesis_list, result_json, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (snapshot_id, run_id, scenario_id, name, description,
+                 hpayload, rpayload, _now()),
+            )
+            conn.commit()
+        finally:
+            close_conn(conn)
+    except sqlite3.IntegrityError:
+        return False, "snapshot name %s already exists under run %s" % (name, run_id)
+    except sqlite3.Error as exc:
+        return False, "db error: %s" % exc
+    return True, "created"
+
+
+def list_whatif_snapshots(run_id) -> list:
+    """列出该 run 下全部推演快照, created_at 倒序 (rowid 兜底, 结果稳定)。"""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM hypothesis_result_snapshot WHERE run_id=? "
+            "ORDER BY created_at DESC, rowid DESC",
+            (run_id,),
+        ).fetchall()
+    finally:
+        close_conn(conn)
+    return [_snapshot_row_to_dict(r) for r in rows]
+
+
+def get_whatif_snapshot(snapshot_id):
+    """查询单条快照 (hypothesis_list/result_json 解析为对象)。不存在返回 None。"""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM hypothesis_result_snapshot WHERE snapshot_id=?",
+            (snapshot_id,),
+        ).fetchone()
+    finally:
+        close_conn(conn)
+    return _snapshot_row_to_dict(row) if row is not None else None
+
+
+def delete_whatif_snapshot(snapshot_id) -> tuple:
+    """删除快照。不存在返回 (False, 'snapshot %s not found') 404 语义。"""
+    try:
+        conn = get_conn()
+        try:
+            cur = conn.execute(
+                "DELETE FROM hypothesis_result_snapshot WHERE snapshot_id=?",
+                (snapshot_id,),
+            )
+            conn.commit()
+        finally:
+            close_conn(conn)
+    except sqlite3.Error as exc:
+        return False, "db error: %s" % exc
+    if cur.rowcount == 0:
+        return False, "snapshot %s not found" % snapshot_id
+    return True, "deleted"
+
+
+def _latest_reality_results(run_id) -> tuple:
+    """该 run 最近一次 check-all 的 task_results / dependency_checks (只读)。
+
+    与 run_all_tasks_check 覆盖语义一致 (每 task/dep 只保留最新一条),
+    取 result_id / check_id 最大者。
+    返回 ({task_id: {"status","result_msg"}}, {dep_id: {"status","check_msg"}},
+          最新 task_results created_at 或 None)。
+    """
+    conn = get_conn()
+    try:
+        trows = conn.execute(
+            "SELECT task_id, status, result_msg, created_at FROM task_results t "
+            "WHERE t.run_id=? AND t.result_id = ("
+            "  SELECT MAX(t2.result_id) FROM task_results t2 "
+            "  WHERE t2.run_id = t.run_id AND t2.task_id = t.task_id)",
+            (run_id,),
+        ).fetchall()
+        drows = conn.execute(
+            "SELECT dep_id, status, check_msg FROM dependency_checks c "
+            "WHERE c.run_id=? AND c.check_id = ("
+            "  SELECT MAX(c2.check_id) FROM dependency_checks c2 "
+            "  WHERE c2.run_id = c.run_id AND c2.dep_id = c.dep_id)",
+            (run_id,),
+        ).fetchall()
+    finally:
+        close_conn(conn)
+    tasks = {r["task_id"]: {"status": r["status"], "result_msg": r["result_msg"]}
+             for r in trows}
+    deps = {r["dep_id"]: {"status": r["status"], "check_msg": r["check_msg"]}
+            for r in drows}
+    latest_ts = max((r["created_at"] for r in trows), default=None)
+    return tasks, deps, latest_ts
+
+
+def _diff_changed(reality_status, whatif_status):
+    """状态对比: 两侧都有值才可比; reality 缺失返回 None (无基线可比)。"""
+    if reality_status is None or whatif_status is None:
+        return None
+    return reality_status != whatif_status
+
+
+def compare_reality_vs_whatif(run_id: str, snapshot_id: str) -> tuple:
+    """快照(what-if 推演结果) vs 该 run 最近一次 check-all 真实研判, 差异报告。
+
+    只读 task_results / dependency_checks (SELECT); 快照仅归档, 不参与
+    后续推演计算。快照不存在或不属于该 run → (False, "... not found") 404 语义。
+
+    返回 (ok, msg, data), data = {
+        run_id, snapshot_id, snapshot_name, reality_available, reality_checked_at,
+        comparison: [{task_id, reality_status, whatif_status, changed,
+                      deps: [{dep_id, reality_status, whatif_status, changed}]}]
+    }
+    reality 无记录的 task/dep → reality_status=None, changed=None (无基线可比)。
+    """
+    snap = get_whatif_snapshot(snapshot_id)
+    if snap is None:
+        return False, "snapshot %s not found" % snapshot_id, None
+    if snap["run_id"] != run_id:
+        return False, "snapshot %s not found for run %s" % (snapshot_id, run_id), None
+
+    reality_tasks, reality_deps, latest_ts = _latest_reality_results(run_id)
+
+    # 快照中的 what-if 任务/依赖 (防御脏数据, 结构异常按缺省处理)
+    result = snap["result_json"] or {}
+    whatif_tasks = {}
+    if isinstance(result, dict):
+        for t in result.get("tasks") or []:
+            if isinstance(t, dict):
+                whatif_tasks[t.get("task_id")] = t
+
+    # 依赖元数据: dep_id -> task_id (只读 dependency_definitions)
+    conn = get_conn()
+    try:
+        meta_rows = conn.execute(
+            "SELECT task_id, dep_id FROM dependency_definitions"
+        ).fetchall()
+    finally:
+        close_conn(conn)
+    task_deps = {}
+    for r in meta_rows:
+        task_deps.setdefault(r["task_id"], []).append(r["dep_id"])
+
+    comparison = []
+    for task_id in _ALL_TASK_IDS:
+        rt = reality_tasks.get(task_id)
+        wt = whatif_tasks.get(task_id)
+        r_status = rt["status"] if rt else None
+        w_status = wt.get("task_status") if wt else None
+
+        dep_ids = set(task_deps.get(task_id, []))
+        if wt:
+            for d in wt.get("deps") or []:
+                if isinstance(d, dict) and d.get("dep_id"):
+                    dep_ids.add(d["dep_id"])
+        dep_rows = []
+        for dep_id in sorted(dep_ids):
+            if dep_id == "-":  # 无依赖定义占位行不参与对比
+                continue
+            rd = reality_deps.get(dep_id)
+            wd = next(
+                (d for d in (wt.get("deps") or [])
+                 if isinstance(d, dict) and d.get("dep_id") == dep_id),
+                None,
+            ) if wt else None
+            r_dep_status = rd["status"] if rd else None
+            w_dep_status = wd.get("status") if wd else None
+            dep_rows.append({
+                "dep_id": dep_id,
+                "reality_status": r_dep_status,
+                "whatif_status": w_dep_status,
+                "changed": _diff_changed(r_dep_status, w_dep_status),
+            })
+        comparison.append({
+            "task_id": task_id,
+            "reality_status": r_status,
+            "whatif_status": w_status,
+            "changed": _diff_changed(r_status, w_status),
+            "deps": dep_rows,
+        })
+
+    return True, "compared", {
+        "run_id": run_id,
+        "snapshot_id": snapshot_id,
+        "snapshot_name": snap["name"],
+        "reality_available": bool(reality_tasks),
+        "reality_checked_at": latest_ts,
+        "comparison": comparison,
+    }

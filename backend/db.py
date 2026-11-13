@@ -4,7 +4,7 @@
 
 被 main.py import 时自动执行建表 (main.py 仅新增一行 import db),
 启动 uvicorn 即生成数据库文件 bb03.db
-(阶段02 7张表 + 阶段03板块1 4张表 + 阶段04板块3 1张表)。
+(阶段02 7张表 + 阶段03板块1 4张表 + 阶段04板块3、板块4各1张表)。
 """
 
 import sqlite3
@@ -125,6 +125,24 @@ CREATE TABLE IF NOT EXISTS hypothesis_scenario (
     name TEXT NOT NULL,
     description TEXT,
     hypothesis_list TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(run_id, name)
+);
+
+-- ============================================================
+-- 阶段04 板块4: what-if 推演快照归档
+-- 只归档查阅: 保存推演当时的 hypothesis_list + result_json (与方案解耦,
+-- scenario_id 仅记录来源方案, 可为空)。后续推演依然实时计算, 绝不把
+-- 快照 result_json 当输入。同 run_id 下 name 唯一。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS hypothesis_result_snapshot (
+    snapshot_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    scenario_id TEXT,
+    name TEXT NOT NULL,
+    description TEXT,
+    hypothesis_list TEXT NOT NULL,
+    result_json TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(run_id, name)
 );
