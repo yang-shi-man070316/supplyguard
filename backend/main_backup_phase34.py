@@ -1,0 +1,848 @@
+"""应急物资保障 SupplyGuard - 后端骨架（Day 1）
+
+教学案例来源：S03-B 案例 B-B03《应急物资保障任务认知》（V0.8R1，改造参赛）
+
+已实现的：
+- 校园极端天气演练场景：3 个关键服务点 + 2 个储备点 + 3 类教学物资
+- 缺口计算：需求 − 已签收 − 在途 = 缺口
+- 签收语义：**签收取证失败 ≠ 未送达**，状态判为「待验证」而非「未送达」
+- run_id：每次分析生成独立 UUID，旧 run 不覆盖
+
+留给学生用 AI 完成的：
+- TODO[阶段1] 缺口优先级排序：按服务点等级 + 缺口比例，而非原始数量
+- TODO[阶段2] 签收证据链：签收记录带拍照/签收人/时间，能回到原投送单
+- TODO[阶段3] LLM 解释层（只解释结构化结果，不判定保障状态）
+- TODO[阶段4] 物资保障知识 RAG 问答
+"""
+
+import sqlite3
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from mqtt_client import ALERTS, CURRENT_STATE, start_mqtt, stop_mqtt
+from db import get_conn, close_conn
+from run_store import (
+    build_hypothesis_view,
+    compare_reality_vs_whatif,
+    complete_run,
+    create_run,
+    create_scenario,
+    delete_scenario,
+    delete_whatif_snapshot,
+    get_run,
+    get_scenario,
+    get_whatif_snapshot,
+    list_runs,
+    list_scenarios,
+    list_whatif_snapshots,
+    run_all_tasks_check,
+    run_t1_check,
+    run_whatif_once,
+    save_whatif_snapshot,
+    seed_t1_meta,
+    seed_t2t5_meta,
+    update_run,
+)
+
+DB = Path(__file__).parent / "supplyguard.db"
+FRONTEND = Path(__file__).parent.parent / "frontend"
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    seed_t1_meta()   # 阶段03板块3: T1 任务/依赖定义种子数据 (幂等)
+    seed_t2t5_meta() # 阶段03板块4: T2~T5 任务/依赖定义种子数据 (幂等)
+    start_mqtt()  # 连接失败只打警告, 不阻塞启动
+    yield
+    stop_mqtt()
+
+
+app = FastAPI(title="应急物资保障 SupplyGuard", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+)
+
+# ---- 教学规模固定（不放大，避免变成物流调度系统）----
+MATERIALS = ["饮用水", "应急照明", "急救包"]
+
+SITES = [
+    # (id, 名称, 类型, 人数/规模)
+    ("S1", "教学楼 A", "service", 320),
+    ("S2", "图书馆", "service", 180),
+    ("S3", "体育馆", "service", 260),
+    ("D1", "物资仓库 1", "depot", 0),
+    ("D2", "物资仓库 2", "depot", 0),
+]
+
+# 初始需求（人 × 系数，示意用）
+BASE_DEMAND = {
+    ("S1", "饮用水"): 320,
+    ("S1", "应急照明"): 40,
+    ("S1", "急救包"): 6,
+    ("S2", "饮用水"): 180,
+    ("S2", "应急照明"): 24,
+    ("S2", "急救包"): 4,
+    ("S3", "饮用水"): 260,
+    ("S3", "应急照明"): 32,
+    ("S3", "急救包"): 5,
+}
+
+# 已签收（演练前已到位的部分）
+DELIVERED = {
+    ("S1", "饮用水"): 200,
+    ("S1", "应急照明"): 40,
+    ("S2", "饮用水"): 180,
+    ("S2", "急救包"): 4,
+    ("S3", "应急照明"): 32,
+}
+
+# 在途（已派出、未签收）
+IN_TRANSIT = [
+    # (投送单, 起点, 终点, 物资, 数量, 状态)
+    ("T-001", "D1", "S1", "饮用水", 120, "dispatched"),
+    ("T-002", "D1", "S3", "饮用水", 260, "dispatched"),
+    ("T-003", "D2", "S1", "急救包", 6, "sign_failed"),  # 签收取证失败：送达与否未知
+]
+
+
+def db():
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = db()
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS sites (
+            id TEXT PRIMARY KEY, name TEXT, kind TEXT, scale INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS demand (
+            site_id TEXT, material TEXT, qty INTEGER,
+            PRIMARY KEY (site_id, material)
+        );
+        CREATE TABLE IF NOT EXISTS stock (
+            site_id TEXT, material TEXT, qty INTEGER,
+            PRIMARY KEY (site_id, material)
+        );
+        CREATE TABLE IF NOT EXISTS shipments (
+            id TEXT PRIMARY KEY, from_depot TEXT, to_site TEXT,
+            material TEXT, qty INTEGER, status TEXT, note TEXT
+        );
+        CREATE TABLE IF NOT EXISTS runs (
+            run_id TEXT PRIMARY KEY, created_at TEXT, summary TEXT
+        );
+        """
+    )
+    conn.execute("DELETE FROM sites")
+    conn.execute("DELETE FROM demand")
+    conn.execute("DELETE FROM stock")
+    conn.execute("DELETE FROM shipments")
+    conn.executemany(
+        "INSERT INTO sites VALUES (?,?,?,?)",
+        [list(s) for s in SITES],
+    )
+    conn.executemany(
+        "INSERT INTO demand VALUES (?,?,?)",
+        [[k[0], k[1], v] for k, v in BASE_DEMAND.items()],
+    )
+    conn.executemany(
+        "INSERT INTO stock VALUES (?,?,?)",
+        [[k[0], k[1], v] for k, v in DELIVERED.items()],
+    )
+    conn.executemany(
+        "INSERT INTO shipments VALUES (?,?,?,?,?,?,?)",
+        [list(t) + [""] for t in IN_TRANSIT],
+    )
+    conn.commit()
+    conn.close()
+
+
+def compute_state():
+    """结构化计算：每个服务点 × 每种物资的状态。不调用 LLM。"""
+    conn = db()
+    rows = conn.execute(
+        """
+        SELECT s.id AS site, s.name AS site_name, d.material, d.qty AS demand,
+               COALESCE(k.qty, 0) AS delivered
+        FROM sites s
+        JOIN demand d ON d.site_id = s.id
+        LEFT JOIN stock k ON k.site_id = d.site_id AND k.material = d.material
+        WHERE s.kind = 'service'
+        ORDER BY s.id, d.material
+        """
+    ).fetchall()
+
+    transit = conn.execute(
+        "SELECT to_site, material, qty, status FROM shipments"
+    ).fetchall()
+    conn.close()
+
+    # 在途按状态拆分：已发运计入可用，签收取证失败计入"待验证"
+    in_transit_ok = {}
+    pending = {}
+    for t in transit:
+        key = (t["to_site"], t["material"])
+        if t["status"] == "dispatched":
+            in_transit_ok[key] = in_transit_ok.get(key, 0) + t["qty"]
+        elif t["status"] == "sign_failed":
+            pending[key] = pending.get(key, 0) + t["qty"]
+
+    items = []
+    for r in rows:
+        key = (r["site"], r["material"])
+        demand = r["demand"]
+        delivered = r["delivered"]
+        transit_qty = in_transit_ok.get(key, 0)
+        pending_qty = pending.get(key, 0)
+
+        available = delivered + transit_qty
+        gap_raw = max(demand - available, 0)
+
+        # 核心语义：签收取证失败 → 待验证，不判未送达
+        # 待验证时不输出确定缺口，只给潜在区间 [最乐观, 最悲观]
+        gap_lo, gap_hi = gap_raw, gap_raw
+        if pending_qty > 0 and gap_raw > 0:
+            status = "待验证"
+            gap_lo = max(demand - available - pending_qty, 0)
+            gap_hi = gap_raw
+            gap_out = 0  # 未定，不判确定缺口
+            note = "有 %d 件签收取证失败，送达未定；潜在缺口 %d–%d" % (
+                pending_qty, gap_lo, gap_hi)
+        elif gap_raw == 0:
+            status = "满足"
+            gap_out = 0
+            note = "已到位或已发运"
+        elif available == 0:
+            status = "缺口"
+            gap_out = gap_raw
+            note = "无到位、无在途"
+        else:
+            status = "部分满足"
+            gap_out = gap_raw
+            note = "尚缺 %d" % gap_raw
+
+        items.append(
+            {
+                "site": r["site"],
+                "site_name": r["site_name"],
+                "material": r["material"],
+                "demand": demand,
+                "delivered": delivered,
+                "in_transit": transit_qty,
+                "sign_pending": pending_qty,
+                "gap": gap_out,
+                "gap_range": [gap_lo, gap_hi],
+                "status": status,
+                "note": note,
+            }
+        )
+
+    summary = {
+        "total": len(items),
+        "满足": sum(1 for i in items if i["status"] == "满足"),
+        "缺口": sum(1 for i in items if i["status"] == "缺口"),
+        "部分满足": sum(1 for i in items if i["status"] == "部分满足"),
+        "待验证": sum(1 for i in items if i["status"] == "待验证"),
+    }
+    return items, summary
+
+
+@app.get("/")
+def index():
+    return FileResponse(FRONTEND / "index.html")
+
+
+@app.get("/api/state")
+def state():
+    items, summary = compute_state()
+    return {"items": items, "summary": summary}
+
+
+@app.get("/api/current-state")
+def current_state():
+    """B-B03 阶段01: 返回 MQTT 收到的最新内存状态 (不落库、不保存历史)."""
+    return CURRENT_STATE
+
+
+@app.get("/api/reserve/{reserve_id}")
+def reserve_detail(reserve_id: str):
+    """B-B03 阶段01: 查询单个储备点当前库存 (仅内存 CURRENT_STATE)."""
+    node = CURRENT_STATE["reserves"].get(reserve_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="reserve %s not found" % reserve_id)
+    return node
+
+
+@app.get("/api/service/{service_id}")
+def service_detail(service_id: str):
+    """B-B03 阶段01: 查询单个服务点当前需求 (仅内存 CURRENT_STATE)."""
+    node = CURRENT_STATE["services"].get(service_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="service %s not found" % service_id)
+    return node
+
+
+@app.get("/api/transport/{transport_id}")
+def transport_detail(transport_id: str):
+    """B-B03 阶段01: 查询单个运输资源当前状态 (仅内存 CURRENT_STATE)."""
+    node = CURRENT_STATE["transports"].get(transport_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="transport %s not found" % transport_id)
+    return node
+
+
+@app.get("/api/alerts")
+def alerts():
+    """B-B03 阶段01: 返回全部告警记录 (含已恢复 active=false, 记录不删除)."""
+    return {"alerts": ALERTS}
+
+
+@app.get("/api/alerts/active")
+def active_alerts():
+    """B-B03 阶段01: 只返回当前活跃告警 (active=true)."""
+    return {"alerts": [a for a in ALERTS if a["active"]]}
+
+
+@app.get("/api/alerts/history")
+def alerts_history(status: str = None, source_id: str = None):
+    """B-B03 阶段02: 告警历史 (只读数据库)。
+
+    status=active/resolved 过滤状态 (其他值忽略); source_id 按资源过滤。
+    无匹配返回 [], 按告警产生时间倒序, 时间字段原样返回。
+    """
+    conds, params = [], []
+    if status == "active":
+        conds.append("active=1")
+    elif status == "resolved":
+        conds.append("active=0")
+    if source_id:
+        conds.append("resource_id=?")
+        params.append(source_id)
+    sql = "SELECT * FROM alert_records"
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY created_at DESC, db_id DESC"
+
+    conn = get_conn()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        close_conn(conn)
+
+    result = []
+    for r in rows:
+        item = dict(r)
+        item["status"] = "active" if item["active"] else "resolved"
+        result.append(item)
+    return result
+
+
+@app.get("/api/history/stocks")
+def history_stocks(reserve_id: str = None):
+    """B-B03 阶段02: 储备点库存观测历史 (只读)。不传 reserve_id 返回整表, 无匹配返回 []. """
+    conn = get_conn()
+    try:
+        if reserve_id:
+            rows = conn.execute(
+                "SELECT * FROM stock_observations WHERE reserve_id=? ORDER BY stock_id",
+                (reserve_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM stock_observations ORDER BY stock_id").fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/history/demands")
+def history_demands(service_id: str = None):
+    """B-B03 阶段02: 服务点需求历史 (只读)。不传 service_id 返回整表, 无匹配返回 []. """
+    conn = get_conn()
+    try:
+        if service_id:
+            rows = conn.execute(
+                "SELECT * FROM demand_records WHERE service_id=? ORDER BY demand_id",
+                (service_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM demand_records ORDER BY demand_id").fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/history/transports")
+def history_transports(transport_id: str = None):
+    """B-B03 阶段02: 运输状态观测历史 (只读)。不传 transport_id 返回整表, 无匹配返回 []. """
+    conn = get_conn()
+    try:
+        if transport_id:
+            rows = conn.execute(
+                "SELECT * FROM transport_observations WHERE transport_id=? ORDER BY observation_id",
+                (transport_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM transport_observations ORDER BY observation_id"
+            ).fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/evidence")
+def evidence_history(evidence_type: str = None, source_id: str = None):
+    """B-B03 阶段02: 取证记录历史 (只读)。参数均可选, 不传返回整表, 无匹配返回 []. """
+    conds, params = [], []
+    if evidence_type:
+        conds.append("evidence_type=?")
+        params.append(evidence_type)
+    if source_id:
+        conds.append("source_id=?")
+        params.append(source_id)
+    sql = "SELECT * FROM evidence"
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY evidence_id"
+
+    conn = get_conn()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/analyze")
+def analyze():
+    """跑一次保障分析，生成独立 run_id。先计算，再解释。"""
+    items, summary = compute_state()
+    run_id = str(uuid.uuid4())
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = db()
+    conn.execute(
+        "INSERT INTO runs VALUES (?,?,?)",
+        (run_id, ts, "满足%d/缺口%d/待验证%d" % (summary["满足"], summary["缺口"], summary["待验证"])),
+    )
+    conn.commit()
+    conn.close()
+
+    # TODO[阶段3]：把 items 交给 LLM，只让它解释，不让它改 status
+    explanation = (
+        "本次共 %d 项物资需求：满足 %d 项、缺口 %d 项、部分满足 %d 项、待验证 %d 项。"
+        % (
+            summary["total"],
+            summary["满足"],
+            summary["缺口"],
+            summary["部分满足"],
+            summary["待验证"],
+        )
+    )
+    pending = [i for i in items if i["status"] == "待验证"]
+    if pending:
+        explanation += (
+            "其中 %d 项存在签收取证失败，按规定判为待验证——"
+            "签收失败不等于未送达，需补充取证后再下结论。" % len(pending)
+        )
+    explanation += "（此段为规则模板输出，阶段3 接入 LLM 后由其解释结构化结果。）"
+
+    return {
+        "run_id": run_id,
+        "created_at": ts,
+        "items": items,
+        "summary": summary,
+        "explanation": explanation,
+    }
+
+
+@app.post("/api/shipment/{shipment_id}/sign")
+def sign(shipment_id: str, ok: bool = True):
+    """模拟签收。ok=false 表示签收取证失败。"""
+    conn = db()
+    row = conn.execute("SELECT * FROM shipments WHERE id=?", (shipment_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"ok": False, "msg": "投送单不存在"}
+
+    if ok:
+        conn.execute(
+            "UPDATE shipments SET status='signed' WHERE id=?", (shipment_id,)
+        )
+        conn.execute(
+            "INSERT INTO stock VALUES (?,?,?) ON CONFLICT(site_id, material) "
+            "DO UPDATE SET qty = qty + ?",
+            (row["to_site"], row["material"], row["qty"], row["qty"]),
+        )
+        msg = "签收成功，计入到位"
+    else:
+        conn.execute(
+            "UPDATE shipments SET status='sign_failed' WHERE id=?", (shipment_id,)
+        )
+        msg = "签收取证失败：状态转为待验证，不判为未送达"
+
+    conn.commit()
+    conn.close()
+    return {"ok": True, "msg": msg}
+
+
+@app.post("/api/reset")
+def reset():
+    init_db()
+    return {"ok": True, "msg": "演练数据已重置"}
+
+
+@app.post("/api/runs")
+def runs_create(run_id: str, payload: dict = None):
+    """独立任务: 新增 run (status=pending)."""
+    ok, msg = create_run(run_id, payload)
+    return {"ok": ok, "msg": msg}
+
+
+@app.get("/api/runs")
+def runs_list():
+    """独立任务: 全部 run 列表 (任意状态可读)."""
+    return {"runs": list_runs()}
+
+
+def _err_code(msg: str) -> int:
+    """run_store 错误消息 → 统一响应 code (404 不存在 / 409 冲突 / 500 其他)."""
+    if "not found" in msg:
+        return 404
+    if "completed" in msg or "already exists" in msg:
+        return 409
+    return 500
+
+
+@app.post("/api/runs/create")
+async def runs_create(request: Request, run_id: str = None):
+    """B-B03 阶段03板块2: 创建 run (status=pending)。
+
+    run_id 来源: query 参数优先, 其次 JSON body 的 run_id 字段;
+    payload: body 的 payload 字段; body 无 run_id/payload 字段时整包视为 payload。
+    run_id 缺失返回 code=400, 重复返回 code=409。
+    """
+    data = {}
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            data = body
+    except Exception:
+        pass
+    if run_id is None:
+        run_id = data.get("run_id")
+    if "payload" in data:
+        payload = data.get("payload")
+    elif "run_id" in data:
+        payload = None
+    else:
+        payload = data or None  # 兼容旧用法: body 即 payload
+    if not run_id:
+        return {"code": 400, "msg": "run_id required", "data": None}
+    ok, msg = create_run(run_id, payload)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": get_run(run_id)}
+
+
+@app.get("/api/runs/list")
+def runs_list():
+    """B-B03 阶段03板块2: 全部 run 列表 (按 created_at 倒序)。
+
+    注意: 必须声明在 /api/runs/{run_id} 之前, 避免 "list" 被路径参数劫持。
+    """
+    return {"code": 0, "msg": "ok", "data": list_runs()}
+
+
+@app.get("/api/runs/{run_id}")
+def runs_get(run_id: str):
+    """B-B03 阶段03板块2: 查询单个 run (任意状态可读)。"""
+    run = get_run(run_id)
+    if run is None:
+        return {"code": 404, "msg": "run %s not found" % run_id, "data": None}
+    return {"code": 0, "msg": "ok", "data": run}
+
+
+@app.put("/api/runs/{run_id}")
+def runs_update(run_id: str, payload: dict):
+    """B-B03 阶段03板块2: 更新 run。completed 拒绝修改 (409, 数据库不变)。
+
+    拒绝由 run_store.update_run 的 SQL where status='pending' 原子控制。
+    """
+    ok, msg = update_run(run_id, payload)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": get_run(run_id)}
+
+
+@app.post("/api/runs/{run_id}/complete")
+def runs_complete(run_id: str):
+    """独立任务: 将 run 标记为 completed。之后不可再修改."""
+    ok, msg = complete_run(run_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail=msg)
+    return {"ok": True, "msg": msg}
+
+
+@app.post("/api/runs/{run_id}/check-t1")
+def runs_check_t1(run_id: str):
+    """B-B03 阶段03板块3: 执行 T1 依赖校验并落库 (dependency_checks/task_results)。
+
+    读取当前 stock/demand 证据快照做判断; 仅 pending 的 run 可执行,
+    completed 返回 code=409 (数据库原子控制), 不存在返回 404。
+    """
+    ok, msg, data = run_t1_check(run_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": data}
+
+
+@app.post("/api/runs/{run_id}/check-all")
+def runs_check_all(run_id: str):
+    """B-B03 阶段03板块4: 串行执行 T1~T5 全套依赖校验并落库。
+
+    复用板块3框架与原子 pending 保护; completed 返回 409, 不存在返回 404。
+    """
+    ok, msg, data = run_all_tasks_check(run_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": data}
+
+
+@app.post("/api/runs/{run_id}/whatif-once")
+async def runs_whatif_once(run_id: str, request: Request):
+    """B-B03 阶段04板块2/3: 一次性 what-if 推演 (纯内存, 结果不落库)。
+
+    body 二选一:
+        {"hypothesis_list": [...]}  直接传假设 (板块2原方式, 完全兼容)
+        {"scenario_id": "..."}      读取已保存方案的 hypothesis_list 来推演
+    同时传两者或都不传 → code=400。
+    run 必须 pending: completed → code=409, 不存在 → code=404, 非法假设 → code=400;
+    scenario 不存在/不属于该 run → code=404。推演结果每次实时计算, 不落库。
+    data 结构对齐 /check-all, 便于与 reality 研判结果逐项对比。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"code": 400, "msg": "invalid JSON body", "data": None}
+    if not isinstance(body, dict):
+        return {"code": 400, "msg": "body must be an object", "data": None}
+    has_hypo = body.get("hypothesis_list") is not None
+    has_scenario = body.get("scenario_id") is not None
+    if has_hypo and has_scenario:
+        return {"code": 400, "msg": "hypothesis_list and scenario_id are mutually exclusive",
+                "data": None}
+    if not has_hypo and not has_scenario:
+        return {"code": 400, "msg": "hypothesis_list or scenario_id required", "data": None}
+    hypothesis_list = body.get("hypothesis_list")
+    if has_scenario:
+        scenario = get_scenario(body["scenario_id"])
+        if scenario is None or scenario["run_id"] != run_id:
+            return {"code": 404, "msg": "scenario %s not found for run %s"
+                    % (body["scenario_id"], run_id), "data": None}
+        hypothesis_list = scenario["hypothesis_list"]
+    try:
+        ok, msg, data = run_whatif_once(run_id, hypothesis_list)
+    except ValueError as exc:
+        return {"code": 400, "msg": str(exc), "data": None}
+    except sqlite3.Error as exc:
+        return {"code": 500, "msg": "db error: %s" % exc, "data": None}
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": data}
+
+
+@app.post("/api/runs/{run_id}/scenarios")
+async def scenarios_create(run_id: str, request: Request):
+    """B-B03 阶段04板块3: 新建/更新 what-if 假设方案 (幂等, 同名覆盖)。
+
+    body: {"scenario_id", "name", "description"?, "hypothesis_list": [...]}
+    run_id 以路径为准; 同 scenario_id 重复保存为更新; 同 run 下同名不同
+    scenario_id 覆盖旧方案 (409 仅在更新改名撞名时返回)。
+    只存配置, 不存推演结果。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"code": 400, "msg": "invalid JSON body", "data": None}
+    if not isinstance(body, dict):
+        return {"code": 400, "msg": "body must be an object", "data": None}
+    try:
+        ok, msg = create_scenario(
+            body.get("scenario_id"), run_id, body.get("name"),
+            body.get("description"), body.get("hypothesis_list"),
+        )
+    except ValueError as exc:
+        return {"code": 400, "msg": str(exc), "data": None}
+    except sqlite3.Error as exc:
+        return {"code": 500, "msg": "db error: %s" % exc, "data": None}
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": get_scenario(body.get("scenario_id"))}
+
+
+@app.get("/api/runs/{run_id}/scenarios")
+def scenarios_list(run_id: str):
+    """B-B03 阶段04板块3: 列出该 run 下全部方案 (created_at 倒序)。"""
+    return {"code": 0, "msg": "ok", "data": list_scenarios(run_id)}
+
+
+@app.get("/api/scenarios/{scenario_id}")
+def scenarios_get(scenario_id: str):
+    """B-B03 阶段04板块3: 查询单条方案。不存在返回 code=404。"""
+    sc = get_scenario(scenario_id)
+    if sc is None:
+        return {"code": 404, "msg": "scenario %s not found" % scenario_id, "data": None}
+    return {"code": 0, "msg": "ok", "data": sc}
+
+
+@app.delete("/api/scenarios/{scenario_id}")
+def scenarios_delete(scenario_id: str):
+    """B-B03 阶段04板块3: 删除方案。不存在返回 code=404。"""
+    ok, msg = delete_scenario(scenario_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": None}
+
+
+@app.post("/api/runs/{run_id}/whatif-once-and-save")
+async def runs_whatif_once_and_save(run_id: str, request: Request):
+    """B-B03 阶段04板块4: 一次性 what-if 推演并归档快照。
+
+    body 二选一 hypothesis_list / scenario_id (规则同 whatif-once), 另加:
+        snapshot_name (必填), snapshot_description (可选)
+    流程: 先执行 what-if 推演 (run 必须 pending: completed → 409, 不存在 → 404),
+    成功后自动保存快照 (snapshot_id 服务端生成; 同 run 下同名快照覆盖)。
+    返回 {snapshot_id, scenario_id, snapshot_name, run_id, tasks}。
+    快照仅归档, 后续推演仍实时计算, 不读取快照结果当输入。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"code": 400, "msg": "invalid JSON body", "data": None}
+    if not isinstance(body, dict):
+        return {"code": 400, "msg": "body must be an object", "data": None}
+    has_hypo = body.get("hypothesis_list") is not None
+    has_scenario = body.get("scenario_id") is not None
+    if has_hypo and has_scenario:
+        return {"code": 400, "msg": "hypothesis_list and scenario_id are mutually exclusive",
+                "data": None}
+    if not has_hypo and not has_scenario:
+        return {"code": 400, "msg": "hypothesis_list or scenario_id required", "data": None}
+    snapshot_name = body.get("snapshot_name")
+    if snapshot_name is None or not str(snapshot_name).strip():
+        return {"code": 400, "msg": "snapshot_name required", "data": None}
+
+    hypothesis_list = body.get("hypothesis_list")
+    scenario_id = None
+    if has_scenario:
+        scenario = get_scenario(body["scenario_id"])
+        if scenario is None or scenario["run_id"] != run_id:
+            return {"code": 404, "msg": "scenario %s not found for run %s"
+                    % (body["scenario_id"], run_id), "data": None}
+        scenario_id = scenario["scenario_id"]
+        hypothesis_list = scenario["hypothesis_list"]
+
+    try:
+        ok, msg, data = run_whatif_once(run_id, hypothesis_list)
+    except ValueError as exc:
+        return {"code": 400, "msg": str(exc), "data": None}
+    except sqlite3.Error as exc:
+        return {"code": 500, "msg": "db error: %s" % exc, "data": None}
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+
+    # 推演成功 → 归档快照
+    snapshot_id = uuid.uuid4().hex
+    try:
+        ok, msg = save_whatif_snapshot(
+            snapshot_id, run_id, scenario_id, str(snapshot_name),
+            body.get("snapshot_description"), hypothesis_list, data,
+        )
+    except ValueError as exc:
+        return {"code": 400, "msg": str(exc), "data": None}
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    data_out = dict(data)
+    data_out["snapshot_id"] = snapshot_id
+    data_out["scenario_id"] = scenario_id
+    data_out["snapshot_name"] = str(snapshot_name)
+    return {"code": 0, "msg": "whatif evaluated and snapshot saved", "data": data_out}
+
+
+@app.get("/api/runs/{run_id}/whatif-snapshots")
+def whatif_snapshots_list(run_id: str):
+    """B-B03 阶段04板块4: 列出该 run 下全部推演快照 (created_at 倒序)。"""
+    return {"code": 0, "msg": "ok", "data": list_whatif_snapshots(run_id)}
+
+
+@app.get("/api/whatif-snapshots/{snapshot_id}")
+def whatif_snapshot_get(snapshot_id: str):
+    """B-B03 阶段04板块4: 查询单条快照。不存在返回 code=404。"""
+    snap = get_whatif_snapshot(snapshot_id)
+    if snap is None:
+        return {"code": 404, "msg": "snapshot %s not found" % snapshot_id, "data": None}
+    return {"code": 0, "msg": "ok", "data": snap}
+
+
+@app.delete("/api/whatif-snapshots/{snapshot_id}")
+def whatif_snapshot_delete(snapshot_id: str):
+    """B-B03 阶段04板块4: 删除快照。不存在返回 code=404。"""
+    ok, msg = delete_whatif_snapshot(snapshot_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": None}
+
+
+@app.get("/api/whatif-snapshots/{snapshot_id}/compare")
+def whatif_snapshot_compare(snapshot_id: str):
+    """B-B03 阶段04板块4: 快照 vs 该 run 最近一次 check-all 真实研判, 差异报告。
+
+    只读 task_results/dependency_checks; 快照不存在 → code=404。
+    """
+    snap = get_whatif_snapshot(snapshot_id)
+    if snap is None:
+        return {"code": 404, "msg": "snapshot %s not found" % snapshot_id, "data": None}
+    ok, msg, data = compare_reality_vs_whatif(snap["run_id"], snapshot_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": data}
+
+
+@app.post("/api/debug/build-hypo-view")
+async def debug_build_hypo_view(request: Request):
+    """B-B03 阶段04板块1(调试): 假设变更叠加, 内存合成证据视图。
+
+    入参 body: {"hypothesis_list": [...]}, 每条:
+        {"type":"stock","reserve":..,"material":..,"delta":±n}
+        {"type":"demand","service":..,"material":..,"delta":±n}
+        {"type":"transport","channel":..,"status":"AVAILABLE|IN_TRANSIT|FAULT"}
+    同目标后假设覆盖前假设; 返回合成后的 stock_view/demand_view/transport_view。
+    只读证据 + 内存计算, 不写库、不落 task_results/dependency_checks。
+    调试用途暂不关联 run; 关联 pending run 的前置校验留待后续板块接入。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"code": 400, "msg": "invalid JSON body", "data": None}
+    if not isinstance(body, dict) or "hypothesis_list" not in body:
+        return {"code": 400, "msg": "hypothesis_list required", "data": None}
+    try:
+        view = build_hypothesis_view(body["hypothesis_list"])
+    except ValueError as exc:
+        return {"code": 400, "msg": str(exc), "data": None}
+    except sqlite3.Error as exc:
+        return {"code": 500, "msg": "db error: %s" % exc, "data": None}
+    return {"code": 0, "msg": "ok", "data": view}
+
+
+app.mount("/static", StaticFiles(directory=str(FRONTEND)), name="static")
