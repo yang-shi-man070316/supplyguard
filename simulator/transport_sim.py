@@ -1,25 +1,24 @@
 import json
 import time
 import paho.mqtt.client as mqtt
+from scenario import load_scenario
 
+# 数据统一放在 scenario_data.json，修改保存后本进程会在下一个 5 秒周期自动热加载
 BROKER = "127.0.0.1"
 PORT = 1883
-
-transport_data = [
-    {"transport_id":"V1","availability":"AVAILABLE","capacity":4},
-    {"transport_id":"V2","availability":"AVAILABLE","capacity":4},
-]
 
 client = mqtt.Client()
 client.connect(BROKER, PORT, 60)
 
 while True:
-    for item in transport_data:
-        msg = {
-            **item,
-            "observed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "source_type": "SIMULATED"
-        }
-        topic = f"nova/bb03/transport/{item['transport_id']}/status"
-        client.publish(topic, json.dumps(msg))
+    data = load_scenario()
+    if data:
+        for item in data.get("transport", []):
+            msg = {
+                **item,
+                "observed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "source_type": "SIMULATED"
+            }
+            topic = f"nova/bb03/transport/{item['transport_id']}/status"
+            client.publish(topic, json.dumps(msg))
     time.sleep(5)

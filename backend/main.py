@@ -17,6 +17,11 @@ app.add_middleware(
 async def health():
     return {"status":"ok","stage":"01‑memory‑only"}
 
+@app.get("/state")
+async def get_state():
+    """调试查看接口：返回当前内存中全部库存、需求、运输状态"""
+    return current_snapshot()
+
 @app.websocket("/ws/guarantee")
 async def ws_guarantee(websocket: WebSocket):
     bind_loop(asyncio.get_running_loop())

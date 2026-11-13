@@ -1,0 +1,25 @@
+{
+  "stock": [
+    {"reserve_id": "R1", "material_id": "W", "quantity": 2},
+    {"reserve_id": "R1", "material_id": "L", "quantity": 2},
+    {"reserve_id": "R1", "material_id": "R", "quantity": 8},
+    {"reserve_id": "R2", "material_id": "W", "quantity": 8},
+    {"reserve_id": "R2", "material_id": "L", "quantity": 5},
+    {"reserve_id": "R2", "material_id": "R", "quantity": 4}
+  ],
+  "demand": [
+    {"service_id": "P1", "material_id": "W", "required_quantity": 4},
+    {"service_id": "P1", "material_id": "L", "required_quantity": 1},
+    {"service_id": "P1", "material_id": "R", "required_quantity": 2},
+    {"service_id": "P2", "material_id": "W", "required_quantity": 8},
+    {"service_id": "P2", "material_id": "L", "required_quantity": 5},
+    {"service_id": "P2", "material_id": "R", "required_quantity": 3},
+    {"service_id": "P3", "material_id": "W", "required_quantity": 6},
+    {"service_id": "P3", "material_id": "L", "required_quantity": 8},
+    {"service_id": "P3", "material_id": "R", "required_quantity": 2}
+  ],
+  "transport": [
+    {"transport_id": "V1", "availability": "AVAILABLE", "capacity": 4},
+    {"transport_id": "V2", "availability": "AVAILABLE", "capacity": 4}
+  ]
+}
