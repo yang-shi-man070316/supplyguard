@@ -159,12 +159,16 @@ def _persist_dispatch(payload):
         traceback.print_exc()
 
 
-def _persist_receipt(payload):
+def _persist_receipt_v2(payload):
     """阶段02: receipt 接收消息写入 receipt_records_v2, 同一 receipt_id 不重复新增。
 
+    字段严格对齐文档: receipt_id / dispatch_id / service_id / material_id /
+    received_quantity / observed_at / source_type / created_at(表默认自动填充)。
     规则: 消息必须自带 receipt_id, 缺失直接跳过; 先查同 receipt_id 是否已存在,
-    存在跳过 INSERT; UNIQUE 约束兜底并发重复 (IntegrityError 同样跳过)。
-    异常只打印不向外传播。
+    存在跳过 INSERT, 禁止覆盖旧记录; UNIQUE 约束兜底并发重复 (IntegrityError
+    同样跳过)。异常只打印不向外传播。
+    在 paho 网络线程内同步执行 (与 _persist_dispatch 等同类, on_message 回调
+    无法 await, 不写成 Python async)。
     """
     receipt_id = payload.get("receipt_id")
     if not receipt_id:
@@ -228,7 +232,7 @@ def on_message(client, userdata, msg):
     elif topic.startswith("nova/bb03/dispatch/"):
         _persist_dispatch(payload)  # 阶段02: 调配消息落库 (不参与内存快照)
     elif topic.startswith("nova/bb03/receipt/"):
-        _persist_receipt(payload)  # 阶段02: 接收消息落库 (不参与内存快照)
+        _persist_receipt_v2(payload)  # 阶段02: 接收消息落库 (不参与内存快照)
 
     # 跨线程投递到 uvicorn 的 event loop 里执行，再广播给前端
     if _main_loop is not None:
