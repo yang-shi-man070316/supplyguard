@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from mqtt_client import ALERTS, CURRENT_STATE, start_mqtt, stop_mqtt
 from db import get_conn, close_conn
 from run_store import (
+    build_hypothesis_view,
     complete_run,
     create_run,
     get_run,
@@ -605,6 +606,33 @@ def runs_check_all(run_id: str):
     if not ok:
         return {"code": _err_code(msg), "msg": msg, "data": None}
     return {"code": 0, "msg": msg, "data": data}
+
+
+@app.post("/api/debug/build-hypo-view")
+async def debug_build_hypo_view(request: Request):
+    """B-B03 阶段04板块1(调试): 假设变更叠加, 内存合成证据视图。
+
+    入参 body: {"hypothesis_list": [...]}, 每条:
+        {"type":"stock","reserve":..,"material":..,"delta":±n}
+        {"type":"demand","service":..,"material":..,"delta":±n}
+        {"type":"transport","channel":..,"status":"AVAILABLE|IN_TRANSIT|FAULT"}
+    同目标后假设覆盖前假设; 返回合成后的 stock_view/demand_view/transport_view。
+    只读证据 + 内存计算, 不写库、不落 task_results/dependency_checks。
+    调试用途暂不关联 run; 关联 pending run 的前置校验留待后续板块接入。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"code": 400, "msg": "invalid JSON body", "data": None}
+    if not isinstance(body, dict) or "hypothesis_list" not in body:
+        return {"code": 400, "msg": "hypothesis_list required", "data": None}
+    try:
+        view = build_hypothesis_view(body["hypothesis_list"])
+    except ValueError as exc:
+        return {"code": 400, "msg": str(exc), "data": None}
+    except sqlite3.Error as exc:
+        return {"code": 500, "msg": "db error: %s" % exc, "data": None}
+    return {"code": 0, "msg": "ok", "data": view}
 
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND)), name="static")

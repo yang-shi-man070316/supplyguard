@@ -697,3 +697,226 @@ def run_all_tasks_check(run_id: str) -> tuple:
             for t in tasks_out
         ],
     }
+
+
+# ============================================================
+# B-B03 阶段04板块1: 假设变更叠加 + 内存临时证据视图合成
+# 只读最新证据 → 内存叠加假设变更 → 返回合成视图。全程不写库、
+# 不新增表、不调用 T1~T5 校验函数、不产生 task_results/dependency_checks。
+# 取数口径与阶段03一致: 每个 (键) 取最大自增id的一条最新观测。
+# ============================================================
+
+_HYPO_TYPES = ("stock", "demand", "transport")
+_TRANSPORT_STATES = ("AVAILABLE", "IN_TRANSIT", "FAULT")
+
+
+def _latest_stocks_by_reserve(conn) -> list:
+    """每个 (reserve_id, material_id) 的最新一条库存观测 (按最大 stock_id)。
+
+    与板块3 _latest_stock_totals 的取数口径一致 (同键取最新一条),
+    本函数保留储备点维度, 供假设按 (储备点, 物资) 叠加。
+    """
+    rows = conn.execute(
+        "SELECT reserve_id, material_id, quantity, observed_at "
+        "FROM stock_observations s "
+        "WHERE s.stock_id = ("
+        "  SELECT MAX(s2.stock_id) FROM stock_observations s2 "
+        "  WHERE s2.reserve_id = s.reserve_id AND s2.material_id = s.material_id)"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _latest_transports(conn) -> list:
+    """每个 transport_id 的最新一条运输观测 (按最大 observation_id)。
+
+    与板块4 T2-D1 的取数口径一致 (同键取最新一条状态)。
+    """
+    rows = conn.execute(
+        "SELECT transport_id, availability, capacity, observed_at "
+        "FROM transport_observations t "
+        "WHERE t.observation_id = ("
+        "  SELECT MAX(t2.observation_id) FROM transport_observations t2 "
+        "  WHERE t2.transport_id = t.transport_id)"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _parse_hypotheses(hypothesis_list: list) -> dict:
+    """校验并解析假设列表, 得到各目标最终生效的变更 (后覆盖前, 不累计)。
+
+    结构/取值非法抛 ValueError; 目标无观测基线不在此判错, 由
+    build_hypothesis_view 以 0 基线合成并标记 hypothesized=true。
+    返回:
+        {"stock": {(reserve, material): delta},
+         "demand": {(service, material): delta},
+         "transport": {channel: status}}
+    """
+    if not isinstance(hypothesis_list, list):
+        raise ValueError("hypothesis_list must be a list")
+    effective = {t: {} for t in _HYPO_TYPES}
+    for i, hypo in enumerate(hypothesis_list):
+        if not isinstance(hypo, dict):
+            raise ValueError("hypothesis #%d must be an object" % (i + 1))
+        htype = hypo.get("type")
+        if htype not in effective:
+            raise ValueError(
+                "hypothesis #%d: unknown type %r (expected stock/demand/transport)"
+                % (i + 1, htype)
+            )
+        if htype == "transport":
+            channel = hypo.get("channel")
+            status = hypo.get("status")
+            if channel is None or not str(channel).strip():
+                raise ValueError("hypothesis #%d: transport requires channel" % (i + 1))
+            if status not in _TRANSPORT_STATES:
+                raise ValueError(
+                    "hypothesis #%d: illegal status %r "
+                    "(expected AVAILABLE/IN_TRANSIT/FAULT)" % (i + 1, status)
+                )
+            effective["transport"][str(channel)] = status
+            continue
+        key_field = "reserve" if htype == "stock" else "service"
+        key = hypo.get(key_field)
+        material = hypo.get("material")
+        delta = hypo.get("delta")
+        if key is None or not str(key).strip():
+            raise ValueError(
+                "hypothesis #%d: %s requires %s" % (i + 1, htype, key_field)
+            )
+        if material is None or not str(material).strip():
+            raise ValueError("hypothesis #%d: %s requires material" % (i + 1, htype))
+        if isinstance(delta, bool):
+            raise ValueError("hypothesis #%d: delta must be an integer" % (i + 1))
+        if isinstance(delta, float):
+            if not delta.is_integer():
+                raise ValueError("hypothesis #%d: delta must be an integer" % (i + 1))
+            delta = int(delta)
+        if not isinstance(delta, int):
+            raise ValueError("hypothesis #%d: delta must be an integer" % (i + 1))
+        # 同目标后出现者覆盖先出现者: 直接覆盖写, 不累计
+        effective[htype][(str(key), str(material))] = delta
+    return effective
+
+
+def build_hypothesis_view(hypothesis_list: list) -> dict:
+    """读取最新证据, 内存叠加假设变更, 返回合成视图。全程不写数据库。
+
+    hypothesis_list 每条假设结构:
+        {"type": "stock",     "reserve": .., "material": .., "delta": ±n}
+            储备点+物资库存增量叠加
+        {"type": "demand",    "service": .., "material": .., "delta": ±n}
+            服务点+物资需求增量叠加
+        {"type": "transport", "channel": .., "status": "AVAILABLE|IN_TRANSIT|FAULT"}
+            通道状态覆盖
+    规则:
+        - 同目标 (stock: reserve+material / demand: service+material /
+          transport: channel) 后出现的假设覆盖先出现的, 不累计
+        - delta 支持正负; 结果为纯算术叠加, 不做下限截断 (负值如实呈现)
+        - 目标无观测基线时以 0 基线合成新条目, 标记 hypothesized=true
+    返回 {"stock_view": [...], "demand_view": [...], "transport_view": [...]},
+    非法输入抛 ValueError (不产生任何数据变更), 库错误向上抛 sqlite3.Error。
+    """
+    effective = _parse_hypotheses(hypothesis_list)
+
+    conn = get_conn()
+    try:
+        stock_rows = _latest_stocks_by_reserve(conn)
+        demand_rows = _latest_demands(conn)     # 复用板块3函数, 口径一致
+        transport_rows = _latest_transports(conn)
+    finally:
+        close_conn(conn)
+
+    # ---- stock_view: 基线 + 各目标生效 delta ----
+    stock_baseline = {(r["reserve_id"], r["material_id"]): r for r in stock_rows}
+    overridden = set()
+    stock_view = []
+    for key, delta in effective["stock"].items():
+        base = stock_baseline.get(key)
+        overridden.add(key)
+        stock_view.append({
+            "reserve_id": key[0],
+            "material_id": key[1],
+            "quantity": (base["quantity"] + delta) if base else delta,
+            "delta": delta,
+            "observed_at": base["observed_at"] if base else None,
+            "hypothesized": base is None,
+        })
+    for key, base in stock_baseline.items():
+        if key not in overridden:
+            stock_view.append({
+                "reserve_id": key[0],
+                "material_id": key[1],
+                "quantity": base["quantity"],
+                "delta": 0,
+                "observed_at": base["observed_at"],
+                "hypothesized": False,
+            })
+    stock_view.sort(key=lambda e: (e["reserve_id"], e["material_id"]))
+
+    # ---- demand_view: 基线 + 各目标生效 delta ----
+    demand_baseline = {(r["service_id"], r["material_id"]): r for r in demand_rows}
+    overridden = set()
+    demand_view = []
+    for key, delta in effective["demand"].items():
+        base = demand_baseline.get(key)
+        overridden.add(key)
+        demand_view.append({
+            "service_id": key[0],
+            "material_id": key[1],
+            "required_quantity": (base["required_quantity"] + delta) if base else delta,
+            "delta": delta,
+            "observed_at": base["observed_at"] if base else None,
+            "hypothesized": base is None,
+        })
+    for key, base in demand_baseline.items():
+        if key not in overridden:
+            demand_view.append({
+                "service_id": key[0],
+                "material_id": key[1],
+                "required_quantity": base["required_quantity"],
+                "delta": 0,
+                "observed_at": base["observed_at"],
+                "hypothesized": False,
+            })
+    demand_view.sort(key=lambda e: (e["service_id"], e["material_id"]))
+
+    # ---- transport_view: 基线 + 各通道生效状态覆盖 ----
+    transport_baseline = {r["transport_id"]: r for r in transport_rows}
+    transport_view = []
+    for channel, status in effective["transport"].items():
+        base = transport_baseline.get(channel)
+        if base is None:
+            transport_view.append({
+                "transport_id": channel,
+                "availability": status,
+                "baseline_availability": None,
+                "capacity": None,
+                "observed_at": None,
+                "hypothesized": True,
+            })
+        else:
+            transport_view.append({
+                "transport_id": channel,
+                "availability": status,
+                "baseline_availability": base["availability"],
+                "capacity": base["capacity"],
+                "observed_at": base["observed_at"],
+                "hypothesized": False,
+            })
+    for key, base in transport_baseline.items():
+        if key not in effective["transport"]:
+            transport_view.append({
+                "transport_id": key,
+                "availability": base["availability"],
+                "baseline_availability": base["availability"],
+                "capacity": base["capacity"],
+                "observed_at": base["observed_at"],
+                "hypothesized": False,
+            })
+    transport_view.sort(key=lambda e: e["transport_id"])
+
+    return {
+        "stock_view": stock_view,
+        "demand_view": demand_view,
+        "transport_view": transport_view,
+    }
