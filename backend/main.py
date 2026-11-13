@@ -28,7 +28,15 @@ from fastapi.staticfiles import StaticFiles
 
 from mqtt_client import ALERTS, CURRENT_STATE, start_mqtt, stop_mqtt
 from db import get_conn, close_conn
-from run_store import complete_run, create_run, get_run, list_runs, update_run
+from run_store import (
+    complete_run,
+    create_run,
+    get_run,
+    list_runs,
+    run_t1_check,
+    seed_t1_meta,
+    update_run,
+)
 
 DB = Path(__file__).parent / "supplyguard.db"
 FRONTEND = Path(__file__).parent.parent / "frontend"
@@ -36,6 +44,7 @@ FRONTEND = Path(__file__).parent.parent / "frontend"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    seed_t1_meta()  # 阶段03板块3: T1 任务/依赖定义种子数据 (幂等)
     start_mqtt()  # 连接失败只打警告, 不阻塞启动
     yield
     stop_mqtt()
@@ -568,6 +577,19 @@ def runs_complete(run_id: str):
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
     return {"ok": True, "msg": msg}
+
+
+@app.post("/api/runs/{run_id}/check-t1")
+def runs_check_t1(run_id: str):
+    """B-B03 阶段03板块3: 执行 T1 依赖校验并落库 (dependency_checks/task_results)。
+
+    读取当前 stock/demand 证据快照做判断; 仅 pending 的 run 可执行,
+    completed 返回 code=409 (数据库原子控制), 不存在返回 404。
+    """
+    ok, msg, data = run_t1_check(run_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": data}
 
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND)), name="static")

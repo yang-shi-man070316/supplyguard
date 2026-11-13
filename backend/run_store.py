@@ -121,3 +121,204 @@ def complete_run(run_id: str) -> tuple:
             return False, "run %s not found" % run_id
         return False, "run %s is completed, not modifiable" % run_id
     return True, "completed"
+
+
+# ============================================================
+# B-B03 阶段03板块3: 通用依赖校验框架 + T1 (仅 T1, 禁 T2~T5)
+# 框架: seed 元数据 → 读证据快照 → 逐依赖判断 → 写 dependency_checks
+#       → 汇总写 task_results。依赖判断函数只实现 T1-D1。
+# ============================================================
+
+T1_TASK_ID = "T1"
+T1_TASK_NAME = "关键服务点最低需求保障"
+T1_TASK_DESC = "全部关键服务点当期最低需求均可被当前库存保障"
+T1_DEPS = (
+    {
+        "dep_id": "T1-D1",
+        "dep_name": "关键节点库存≥当期最低需求",
+        "dep_desc": "每个服务点每种物资的当期最低需求 ≤ 当前全网该物资库存观测总量",
+    },
+)
+
+
+def seed_t1_meta() -> tuple:
+    """插入 T1 任务与依赖定义。幂等: 重复执行不重复插入、不覆盖已有行。"""
+    try:
+        conn = get_conn()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO task_definitions "
+                "(task_id, task_name, task_desc, created_at) VALUES (?,?,?,?)",
+                (T1_TASK_ID, T1_TASK_NAME, T1_TASK_DESC, _now()),
+            )
+            for dep in T1_DEPS:
+                conn.execute(
+                    "INSERT OR IGNORE INTO dependency_definitions "
+                    "(dep_id, task_id, dep_name, dep_desc, created_at) VALUES (?,?,?,?,?)",
+                    (dep["dep_id"], T1_TASK_ID, dep["dep_name"], dep["dep_desc"], _now()),
+                )
+            conn.commit()
+        finally:
+            close_conn(conn)
+    except sqlite3.Error as exc:
+        return False, "db error: %s" % exc
+    return True, "seeded"
+
+
+def _latest_demands(conn) -> list:
+    """每个 (service_id, material_id) 的最新一条需求观测 (按最大 demand_id)。"""
+    rows = conn.execute(
+        "SELECT service_id, material_id, required_quantity, observed_at "
+        "FROM demand_records d "
+        "WHERE d.demand_id = ("
+        "  SELECT MAX(d2.demand_id) FROM demand_records d2 "
+        "  WHERE d2.service_id = d.service_id AND d2.material_id = d.material_id)"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _latest_stock_totals(conn) -> dict:
+    """每个 (reserve_id, material_id) 最新库存观测, 按物资全网求和。"""
+    rows = conn.execute(
+        "SELECT material_id, quantity FROM stock_observations s "
+        "WHERE s.stock_id = ("
+        "  SELECT MAX(s2.stock_id) FROM stock_observations s2 "
+        "  WHERE s2.reserve_id = s.reserve_id AND s2.material_id = s.material_id)"
+    ).fetchall()
+    totals = {}
+    for r in rows:
+        totals[r["material_id"]] = totals.get(r["material_id"], 0) + r["quantity"]
+    return totals
+
+
+def _check_dep_t1d1(conn) -> tuple:
+    """T1-D1 判断: 每个服务点每种物资的当期需求 ≤ 全网该物资库存。
+
+    返回 (status, msg), status ∈ satisfied / unsatisfied / unknown。
+    无任何需求观测判 unknown; 某物资无库存观测按库存 0 计 (与阶段02
+    缺口语义一致: 缺口 = 需求 − 全网该物资库存)。
+    """
+    demands = _latest_demands(conn)
+    if not demands:
+        return "unknown", "无服务点需求观测记录, 无法判断"
+    stocks = _latest_stock_totals(conn)
+    shortfalls = []
+    ok_count = 0
+    for d in demands:
+        total = stocks.get(d["material_id"], 0)
+        if total >= d["required_quantity"]:
+            ok_count += 1
+        else:
+            shortfalls.append(
+                "%s %s 缺口%d (需求%d, 库存%d)"
+                % (d["service_id"], d["material_id"],
+                   d["required_quantity"] - total, d["required_quantity"], total)
+            )
+    if shortfalls:
+        return "unsatisfied", "; ".join(shortfalls)
+    return "satisfied", "全部%d项需求均满足 (关键节点库存≥当期最低需求)" % ok_count
+
+
+# 依赖校验分发表: dep_id → 判断函数。T2~T5 的依赖不在此实现。
+_T1_DEP_CHECKERS = {
+    "T1-D1": _check_dep_t1d1,
+}
+
+
+def run_t1_check(run_id: str) -> tuple:
+    """执行 T1 全部依赖校验, 结果落库 dependency_checks + task_results。
+
+    - 仅 status=pending 的 run 允许执行; completed / 不存在直接拒绝。
+    - 落库用 INSERT...SELECT FROM runs WHERE status='pending' 原子控制:
+      预检与写库之间 run 被 complete 时 rowcount=0, 整体 rollback, 不写任何数据。
+    - 同一 run 重复执行时覆盖旧结果 (每 run 每依赖/每任务只保留最新一次)。
+
+    返回 (ok, msg, data); data = {task_id, task_status, deps:[{dep_id,status,check_msg}]}
+    """
+    seed_t1_meta()  # 幂等保底: 元数据缺失时补种
+    try:
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT status FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return False, "run %s not found" % run_id, None
+            if row["status"] != "pending":
+                return False, "run %s is completed, not modifiable" % run_id, None
+
+            deps = conn.execute(
+                "SELECT dep_id FROM dependency_definitions WHERE task_id=? ORDER BY dep_id",
+                (T1_TASK_ID,),
+            ).fetchall()
+            if not deps:
+                return False, "task %s metadata missing" % T1_TASK_ID, None
+
+            dep_results = []
+            for d in deps:
+                dep_id = d["dep_id"]
+                checker = _T1_DEP_CHECKERS.get(dep_id)
+                if checker is None:
+                    dep_results.append({
+                        "dep_id": dep_id, "status": "unknown",
+                        "check_msg": "依赖 %s 的判断逻辑未实现" % dep_id,
+                    })
+                else:
+                    status, check_msg = checker(conn)
+                    dep_results.append(
+                        {"dep_id": dep_id, "status": status, "check_msg": check_msg}
+                    )
+
+            if any(r["status"] == "unsatisfied" for r in dep_results):
+                task_status = "blocked"
+            elif all(r["status"] == "satisfied" for r in dep_results):
+                task_status = "established"
+            else:
+                task_status = "unknown"
+            task_msg = "; ".join(
+                "%s:%s" % (r["dep_id"], r["status"]) for r in dep_results
+            )
+
+            # ---- 原子落库: 写库瞬间要求 run 仍为 pending, 否则整体回滚 ----
+            new_check_ids = []  # (dep_id, 新行 check_id), 用于覆盖旧结果
+            for r in dep_results:
+                cur = conn.execute(
+                    "INSERT INTO dependency_checks "
+                    "(run_id, dep_id, status, check_msg, created_at) "
+                    "SELECT ?,?,?,?,? FROM runs WHERE run_id=? AND status='pending'",
+                    (run_id, r["dep_id"], r["status"], r["check_msg"], _now(), run_id),
+                )
+                if cur.rowcount == 0:
+                    conn.rollback()
+                    return False, "run %s is completed, not modifiable" % run_id, None
+                new_check_ids.append((r["dep_id"], cur.lastrowid))
+            cur_results = conn.execute(
+                "INSERT INTO task_results (run_id, task_id, status, result_msg, created_at) "
+                "SELECT ?,?,?,?,? FROM runs WHERE run_id=? AND status='pending'",
+                (run_id, T1_TASK_ID, task_status, task_msg, _now(), run_id),
+            )
+            if cur_results.rowcount == 0:
+                conn.rollback()
+                return False, "run %s is completed, not modifiable" % run_id, None
+            # 覆盖旧结果: 同一 run 的同一依赖/任务只保留本次新写入的行
+            for dep_id, check_id in new_check_ids:
+                conn.execute(
+                    "DELETE FROM dependency_checks "
+                    "WHERE run_id=? AND dep_id=? AND check_id<?",
+                    (run_id, dep_id, check_id),
+                )
+            conn.execute(
+                "DELETE FROM task_results WHERE run_id=? AND task_id=? AND result_id<?",
+                (run_id, T1_TASK_ID, cur_results.lastrowid),
+            )
+            conn.commit()
+        finally:
+            close_conn(conn)
+    except sqlite3.Error as exc:
+        return False, "db error: %s" % exc, None
+    return True, "checked", {
+        "run_id": run_id,
+        "task_id": T1_TASK_ID,
+        "task_status": task_status,
+        "deps": dep_results,
+    }
