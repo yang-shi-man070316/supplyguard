@@ -3,7 +3,8 @@
 只负责建表和连接管理, 不包含任何业务 CRUD / 插入逻辑。
 
 被 main.py import 时自动执行建表 (main.py 仅新增一行 import db),
-启动 uvicorn 即生成数据库文件 bb03.db (阶段02 7张表 + 阶段03板块1 4张表)。
+启动 uvicorn 即生成数据库文件 bb03.db
+(阶段02 7张表 + 阶段03板块1 4张表 + 阶段04板块3 1张表)。
 """
 
 import sqlite3
@@ -111,6 +112,21 @@ CREATE TABLE IF NOT EXISTS task_results (
     status TEXT NOT NULL CHECK(status IN ('established','blocked','pending_verification','unknown')),
     result_msg TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+-- ============================================================
+-- 阶段04 板块3: 可复用 what-if 假设方案存储
+-- 只存用户填写的假设配置 (hypothesis_list), 不存 T1~T5 推演结果;
+-- 推演每次实时计算 (板块2 run_whatif_once)。同一 run_id 下 name 唯一。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS hypothesis_scenario (
+    scenario_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    hypothesis_list TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(run_id, name)
 );
 """
 

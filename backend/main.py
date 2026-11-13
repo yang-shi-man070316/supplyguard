@@ -32,8 +32,12 @@ from run_store import (
     build_hypothesis_view,
     complete_run,
     create_run,
+    create_scenario,
+    delete_scenario,
     get_run,
+    get_scenario,
     list_runs,
+    list_scenarios,
     run_all_tasks_check,
     run_t1_check,
     run_whatif_once,
@@ -611,21 +615,38 @@ def runs_check_all(run_id: str):
 
 @app.post("/api/runs/{run_id}/whatif-once")
 async def runs_whatif_once(run_id: str, request: Request):
-    """B-B03 阶段04板块2: 一次性 what-if 推演 (纯内存, 结果不落库)。
+    """B-B03 阶段04板块2/3: 一次性 what-if 推演 (纯内存, 结果不落库)。
 
-    body: {"hypothesis_list": [...]} (假设结构与 /api/debug/build-hypo-view 一致);
-    run 必须 pending: completed → code=409, 不存在 → code=404, 非法假设 → code=400。
-    data 结构对齐 /check-all: {run_id, tasks:[{task_id, task_status, task_msg, deps:[...]}]},
-    便于与 reality 研判结果逐项对比。
+    body 二选一:
+        {"hypothesis_list": [...]}  直接传假设 (板块2原方式, 完全兼容)
+        {"scenario_id": "..."}      读取已保存方案的 hypothesis_list 来推演
+    同时传两者或都不传 → code=400。
+    run 必须 pending: completed → code=409, 不存在 → code=404, 非法假设 → code=400;
+    scenario 不存在/不属于该 run → code=404。推演结果每次实时计算, 不落库。
+    data 结构对齐 /check-all, 便于与 reality 研判结果逐项对比。
     """
     try:
         body = await request.json()
     except Exception:
         return {"code": 400, "msg": "invalid JSON body", "data": None}
-    if not isinstance(body, dict) or "hypothesis_list" not in body:
-        return {"code": 400, "msg": "hypothesis_list required", "data": None}
+    if not isinstance(body, dict):
+        return {"code": 400, "msg": "body must be an object", "data": None}
+    has_hypo = body.get("hypothesis_list") is not None
+    has_scenario = body.get("scenario_id") is not None
+    if has_hypo and has_scenario:
+        return {"code": 400, "msg": "hypothesis_list and scenario_id are mutually exclusive",
+                "data": None}
+    if not has_hypo and not has_scenario:
+        return {"code": 400, "msg": "hypothesis_list or scenario_id required", "data": None}
+    hypothesis_list = body.get("hypothesis_list")
+    if has_scenario:
+        scenario = get_scenario(body["scenario_id"])
+        if scenario is None or scenario["run_id"] != run_id:
+            return {"code": 404, "msg": "scenario %s not found for run %s"
+                    % (body["scenario_id"], run_id), "data": None}
+        hypothesis_list = scenario["hypothesis_list"]
     try:
-        ok, msg, data = run_whatif_once(run_id, body["hypothesis_list"])
+        ok, msg, data = run_whatif_once(run_id, hypothesis_list)
     except ValueError as exc:
         return {"code": 400, "msg": str(exc), "data": None}
     except sqlite3.Error as exc:
@@ -633,6 +654,59 @@ async def runs_whatif_once(run_id: str, request: Request):
     if not ok:
         return {"code": _err_code(msg), "msg": msg, "data": None}
     return {"code": 0, "msg": msg, "data": data}
+
+
+@app.post("/api/runs/{run_id}/scenarios")
+async def scenarios_create(run_id: str, request: Request):
+    """B-B03 阶段04板块3: 新建/更新 what-if 假设方案 (幂等, 同名覆盖)。
+
+    body: {"scenario_id", "name", "description"?, "hypothesis_list": [...]}
+    run_id 以路径为准; 同 scenario_id 重复保存为更新; 同 run 下同名不同
+    scenario_id 覆盖旧方案 (409 仅在更新改名撞名时返回)。
+    只存配置, 不存推演结果。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"code": 400, "msg": "invalid JSON body", "data": None}
+    if not isinstance(body, dict):
+        return {"code": 400, "msg": "body must be an object", "data": None}
+    try:
+        ok, msg = create_scenario(
+            body.get("scenario_id"), run_id, body.get("name"),
+            body.get("description"), body.get("hypothesis_list"),
+        )
+    except ValueError as exc:
+        return {"code": 400, "msg": str(exc), "data": None}
+    except sqlite3.Error as exc:
+        return {"code": 500, "msg": "db error: %s" % exc, "data": None}
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": get_scenario(body.get("scenario_id"))}
+
+
+@app.get("/api/runs/{run_id}/scenarios")
+def scenarios_list(run_id: str):
+    """B-B03 阶段04板块3: 列出该 run 下全部方案 (created_at 倒序)。"""
+    return {"code": 0, "msg": "ok", "data": list_scenarios(run_id)}
+
+
+@app.get("/api/scenarios/{scenario_id}")
+def scenarios_get(scenario_id: str):
+    """B-B03 阶段04板块3: 查询单条方案。不存在返回 code=404。"""
+    sc = get_scenario(scenario_id)
+    if sc is None:
+        return {"code": 404, "msg": "scenario %s not found" % scenario_id, "data": None}
+    return {"code": 0, "msg": "ok", "data": sc}
+
+
+@app.delete("/api/scenarios/{scenario_id}")
+def scenarios_delete(scenario_id: str):
+    """B-B03 阶段04板块3: 删除方案。不存在返回 code=404。"""
+    ok, msg = delete_scenario(scenario_id)
+    if not ok:
+        return {"code": _err_code(msg), "msg": msg, "data": None}
+    return {"code": 0, "msg": msg, "data": None}
 
 
 @app.post("/api/debug/build-hypo-view")

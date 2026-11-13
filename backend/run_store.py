@@ -1114,3 +1114,129 @@ def run_whatif_once(run_id: str, hypothesis_list: list) -> tuple:
             for t in tasks_out
         ],
     }
+
+
+# ============================================================
+# B-B03 阶段04板块3: 可复用 what-if 假设方案存储管理
+# 只存配置 (hypothesis_list), 不存推演结果; 推演每次实时计算 (板块2)。
+# 幂等规则:
+#   - 同 scenario_id 重复保存 → 更新 (run_id/name/description/hypothesis_list)
+#   - 同 run_id 下 name 已存在 (不同 scenario_id) → 同名覆盖 (旧行替换)
+#   - 更新改名撞到同 run 其他方案名 → 拒绝 (409 语义)
+# 本板块不校验 run 状态 (run 校验在 whatif 触发时执行, 见板块2)。
+# ============================================================
+
+def _scenario_row_to_dict(row) -> dict:
+    d = dict(row)
+    if d.get("hypothesis_list"):
+        try:
+            d["hypothesis_list"] = json.loads(d["hypothesis_list"])
+        except json.JSONDecodeError:
+            pass  # 保留原文 (防御脏数据)
+    return d
+
+
+def create_scenario(scenario_id, run_id, name, description=None,
+                    hypothesis_list=None) -> tuple:
+    """新增/更新假设方案 (幂等, 同名覆盖)。
+
+    - scenario_id/run_id/name 必填非空, hypothesis_list 必须为对象列表,
+      否则抛 ValueError (接口层转 400);
+    - scenario_id 已存在 → 更新该行 (含 run_id/name);
+    - 同 run_id 下 name 已被其他方案占用:
+        新增路径 → 覆盖旧方案 (旧行删除, 新行插入);
+        更新改名路径 → 拒绝, 返回 (False, "... already exists ...") 409 语义。
+    created_at 记录最近一次保存时间。返回 (ok, msg), msg ∈ created/updated。
+    """
+    if scenario_id is None or not str(scenario_id).strip():
+        raise ValueError("scenario_id required")
+    if run_id is None or not str(run_id).strip():
+        raise ValueError("run_id required")
+    if name is None or not str(name).strip():
+        raise ValueError("name required")
+    if not isinstance(hypothesis_list, list) or any(
+        not isinstance(h, dict) for h in hypothesis_list
+    ):
+        raise ValueError("hypothesis_list must be a list of objects")
+    scenario_id, run_id, name = str(scenario_id), str(run_id), str(name)
+    payload = json.dumps(hypothesis_list, ensure_ascii=False)
+    try:
+        conn = get_conn()
+        try:
+            existing = conn.execute(
+                "SELECT 1 FROM hypothesis_scenario WHERE scenario_id=?",
+                (scenario_id,),
+            ).fetchone()
+            if existing is not None:
+                conn.execute(
+                    "UPDATE hypothesis_scenario "
+                    "SET run_id=?, name=?, description=?, hypothesis_list=?, created_at=? "
+                    "WHERE scenario_id=?",
+                    (run_id, name, description, payload, _now(), scenario_id),
+                )
+                conn.commit()
+                return True, "updated"
+            # 同名覆盖: 删除同 (run_id, name) 旧行后插入新行 (同一事务)
+            conn.execute(
+                "DELETE FROM hypothesis_scenario WHERE run_id=? AND name=?",
+                (run_id, name),
+            )
+            conn.execute(
+                "INSERT INTO hypothesis_scenario "
+                "(scenario_id, run_id, name, description, hypothesis_list, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (scenario_id, run_id, name, description, payload, _now()),
+            )
+            conn.commit()
+        finally:
+            close_conn(conn)
+    except sqlite3.IntegrityError:
+        return False, ("scenario name %s already exists under run %s"
+                       % (name, run_id))
+    except sqlite3.Error as exc:
+        return False, "db error: %s" % exc
+    return True, "created"
+
+
+def list_scenarios(run_id) -> list:
+    """列出该 run 下全部方案, created_at 倒序 (rowid 兜底, 结果稳定)。"""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM hypothesis_scenario WHERE run_id=? "
+            "ORDER BY created_at DESC, rowid DESC",
+            (run_id,),
+        ).fetchall()
+    finally:
+        close_conn(conn)
+    return [_scenario_row_to_dict(r) for r in rows]
+
+
+def get_scenario(scenario_id):
+    """查询单条方案 (hypothesis_list 解析为列表)。不存在返回 None。"""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM hypothesis_scenario WHERE scenario_id=?", (scenario_id,)
+        ).fetchone()
+    finally:
+        close_conn(conn)
+    return _scenario_row_to_dict(row) if row is not None else None
+
+
+def delete_scenario(scenario_id) -> tuple:
+    """删除方案。不存在返回 (False, 'scenario %s not found') 404 语义。"""
+    try:
+        conn = get_conn()
+        try:
+            cur = conn.execute(
+                "DELETE FROM hypothesis_scenario WHERE scenario_id=?", (scenario_id,)
+            )
+            conn.commit()
+        finally:
+            close_conn(conn)
+    except sqlite3.Error as exc:
+        return False, "db error: %s" % exc
+    if cur.rowcount == 0:
+        return False, "scenario %s not found" % scenario_id
+    return True, "deleted"
