@@ -1,6 +1,10 @@
 import asyncio
 import json
+import traceback
+
 import paho.mqtt.client as mqtt
+
+import db  # 阶段02: 需求观测持久化 (只新增写入, 不改动阶段01内存逻辑)
 
 BROKER = "127.0.0.1"
 PORT = 1883
@@ -36,6 +40,36 @@ def _push_snapshot(snapshot):
         except Exception:
             ws_connections.discard(ws)
 
+def _persist_demand(payload):
+    """阶段02: 每条 demand 消息追加一行 demand_records, 只增不改、禁止覆盖历史。
+
+    在 paho 网络线程内执行; get_conn 每次新建连接, 不存在跨线程共享连接问题。
+    任何异常只打印不向外传播——保证阶段01的内存更新与 WebSocket 广播不受影响。
+    """
+    try:
+        conn = db.get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO demand_records "
+                "(service_id, material_id, required_quantity, observed_at, source_type) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    payload["service_id"],
+                    payload["material_id"],
+                    payload["required_quantity"],
+                    payload["observed_at"],
+                    payload.get("source_type", "MQTT"),
+                ),
+            )
+            conn.commit()
+        finally:
+            db.close_conn(conn)
+    except Exception:
+        print("demand_records insert failed: "
+              + json.dumps(payload, ensure_ascii=False))
+        traceback.print_exc()
+
+
 def on_message(client, userdata, msg):
     payload = json.loads(msg.payload.decode("utf-8"))
     topic = msg.topic
@@ -48,6 +82,7 @@ def on_message(client, userdata, msg):
         sid = payload["service_id"]
         mid = payload["material_id"]
         current_demand[(sid, mid)] = payload
+        _persist_demand(payload)  # 阶段02: 原内存更新之后追加落库
     elif topic.startswith("nova/bb03/transport/"):
         tid = payload["transport_id"]
         current_transport[tid] = payload
