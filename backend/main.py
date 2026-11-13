@@ -43,6 +43,47 @@ def history_demands(service_id: str = None):
         close_conn(conn)
     return [dict(r) for r in rows]
 
+@app.get("/api/history/stocks")
+def history_stocks(reserve_id: str = None):
+    """阶段02: 储备点库存观测历史 (只读)。传 reserve_id 返回该储备点全部历史,
+    不传返回整表; 均按 observed_at 升序 (stock_id 升序兜底), 无匹配返回 []。"""
+    conn = get_conn()
+    try:
+        if reserve_id:
+            rows = conn.execute(
+                "SELECT * FROM stock_observations WHERE reserve_id=? "
+                "ORDER BY observed_at ASC, stock_id ASC",
+                (reserve_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM stock_observations ORDER BY observed_at ASC, stock_id ASC"
+            ).fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
+@app.get("/api/history/transports")
+def history_transports(transport_id: str = None):
+    """阶段02: 运输状态观测历史 (只读)。传 transport_id 返回该车辆全部历史,
+    不传返回整表; 均按 observed_at 升序 (observation_id 升序兜底), 无匹配返回 []。"""
+    conn = get_conn()
+    try:
+        if transport_id:
+            rows = conn.execute(
+                "SELECT * FROM transport_observations WHERE transport_id=? "
+                "ORDER BY observed_at ASC, observation_id ASC",
+                (transport_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM transport_observations "
+                "ORDER BY observed_at ASC, observation_id ASC"
+            ).fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
 @app.websocket("/ws/guarantee")
 async def ws_guarantee(websocket: WebSocket):
     bind_loop(asyncio.get_running_loop())

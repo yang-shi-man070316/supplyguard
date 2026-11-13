@@ -70,6 +70,64 @@ def _persist_demand(payload):
         traceback.print_exc()
 
 
+def _persist_stock(payload):
+    """阶段02: 每条 stock 消息追加一行 stock_observations, 只增不改、禁止覆盖历史。
+
+    异常只打印不向外传播 (同 _persist_demand)。
+    """
+    try:
+        conn = db.get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO stock_observations "
+                "(reserve_id, material_id, quantity, observed_at, source_type) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    payload["reserve_id"],
+                    payload["material_id"],
+                    payload["quantity"],
+                    payload["observed_at"],
+                    payload.get("source_type", "MQTT"),
+                ),
+            )
+            conn.commit()
+        finally:
+            db.close_conn(conn)
+    except Exception:
+        print("stock_observations insert failed: "
+              + json.dumps(payload, ensure_ascii=False))
+        traceback.print_exc()
+
+
+def _persist_transport(payload):
+    """阶段02: 每条 transport 消息追加一行 transport_observations, 只增不改、禁止覆盖历史。
+
+    异常只打印不向外传播 (同 _persist_demand)。capacity 可为空 (表列允许 NULL)。
+    """
+    try:
+        conn = db.get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO transport_observations "
+                "(transport_id, availability, capacity, observed_at, source_type) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    payload["transport_id"],
+                    payload["availability"],
+                    payload.get("capacity"),
+                    payload["observed_at"],
+                    payload.get("source_type", "MQTT"),
+                ),
+            )
+            conn.commit()
+        finally:
+            db.close_conn(conn)
+    except Exception:
+        print("transport_observations insert failed: "
+              + json.dumps(payload, ensure_ascii=False))
+        traceback.print_exc()
+
+
 def on_message(client, userdata, msg):
     payload = json.loads(msg.payload.decode("utf-8"))
     topic = msg.topic
@@ -78,6 +136,7 @@ def on_message(client, userdata, msg):
         rid = payload["reserve_id"]
         mid = payload["material_id"]
         current_stock[(rid, mid)] = payload
+        _persist_stock(payload)  # 阶段02: 原内存更新之后追加落库
     elif topic.startswith("nova/bb03/service/"):
         sid = payload["service_id"]
         mid = payload["material_id"]
@@ -86,6 +145,7 @@ def on_message(client, userdata, msg):
     elif topic.startswith("nova/bb03/transport/"):
         tid = payload["transport_id"]
         current_transport[tid] = payload
+        _persist_transport(payload)  # 阶段02: 原内存更新之后追加落库
 
     # 跨线程投递到 uvicorn 的 event loop 里执行，再广播给前端
     if _main_loop is not None:
