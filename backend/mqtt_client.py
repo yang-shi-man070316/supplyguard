@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 import traceback
 
 import paho.mqtt.client as mqtt
@@ -128,6 +129,84 @@ def _persist_transport(payload):
         traceback.print_exc()
 
 
+def _persist_dispatch(payload):
+    """阶段02: 每条 dispatch 调配消息追加一行 dispatch_records, 只增不改。
+
+    异常只打印不向外传播 (同 _persist_demand)。transport_id 可为空。
+    """
+    try:
+        conn = db.get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO dispatch_records "
+                "(from_reserve_id, to_service_id, material_id, quantity, "
+                "transport_id, dispatched_at) VALUES (?,?,?,?,?,?)",
+                (
+                    payload["from_reserve_id"],
+                    payload["to_service_id"],
+                    payload["material_id"],
+                    payload["quantity"],
+                    payload.get("transport_id"),
+                    payload["dispatched_at"],
+                ),
+            )
+            conn.commit()
+        finally:
+            db.close_conn(conn)
+    except Exception:
+        print("dispatch_records insert failed: "
+              + json.dumps(payload, ensure_ascii=False))
+        traceback.print_exc()
+
+
+def _persist_receipt(payload):
+    """阶段02: receipt 接收消息写入 receipt_records_v2, 同一 receipt_id 不重复新增。
+
+    规则: 消息必须自带 receipt_id, 缺失直接跳过; 先查同 receipt_id 是否已存在,
+    存在跳过 INSERT; UNIQUE 约束兜底并发重复 (IntegrityError 同样跳过)。
+    异常只打印不向外传播。
+    """
+    receipt_id = payload.get("receipt_id")
+    if not receipt_id:
+        print("receipt without receipt_id, skipped: "
+              + json.dumps(payload, ensure_ascii=False))
+        return
+    try:
+        conn = db.get_conn()
+        try:
+            dup = conn.execute(
+                "SELECT 1 FROM receipt_records_v2 WHERE receipt_id=?",
+                (receipt_id,),
+            ).fetchone()
+            if dup is not None:
+                print("duplicate receipt %s, skipped" % receipt_id)
+                return
+            conn.execute(
+                "INSERT INTO receipt_records_v2 "
+                "(receipt_id, dispatch_id, service_id, material_id, "
+                "received_quantity, observed_at, source_type) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    receipt_id,
+                    payload.get("dispatch_id"),
+                    payload["service_id"],
+                    payload["material_id"],
+                    payload["received_quantity"],
+                    payload["observed_at"],
+                    payload.get("source_type", "MQTT"),
+                ),
+            )
+            conn.commit()
+        finally:
+            db.close_conn(conn)
+    except sqlite3.IntegrityError:
+        print("duplicate receipt %s, skipped (unique constraint)" % receipt_id)
+    except Exception:
+        print("receipt_records_v2 insert failed: "
+              + json.dumps(payload, ensure_ascii=False))
+        traceback.print_exc()
+
+
 def on_message(client, userdata, msg):
     payload = json.loads(msg.payload.decode("utf-8"))
     topic = msg.topic
@@ -146,6 +225,10 @@ def on_message(client, userdata, msg):
         tid = payload["transport_id"]
         current_transport[tid] = payload
         _persist_transport(payload)  # 阶段02: 原内存更新之后追加落库
+    elif topic.startswith("nova/bb03/dispatch/"):
+        _persist_dispatch(payload)  # 阶段02: 调配消息落库 (不参与内存快照)
+    elif topic.startswith("nova/bb03/receipt/"):
+        _persist_receipt(payload)  # 阶段02: 接收消息落库 (不参与内存快照)
 
     # 跨线程投递到 uvicorn 的 event loop 里执行，再广播给前端
     if _main_loop is not None:

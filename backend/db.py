@@ -4,7 +4,8 @@
 
 被 main.py import 时自动执行建表 (main.py 仅新增一行 import db),
 启动 uvicorn 即生成数据库文件 bb03.db
-(阶段02 7张表 + 阶段03板块1 4张表 + 阶段04板块3、板块4各1张表)。
+(阶段02 7张表 + 板块4 dispatch/receipt 2张表 + 阶段03板块1 4张表
++ 阶段04板块3、板块4各1张表)。
 """
 
 import sqlite3
@@ -67,6 +68,30 @@ CREATE TABLE IF NOT EXISTS receipt_records (
     material_id TEXT NOT NULL,
     quantity_change INTEGER NOT NULL,
     received_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+-- 阶段02板块4: 调配记录 (储备点→服务点), 每次上报追加一行
+CREATE TABLE IF NOT EXISTS dispatch_records (
+    dispatch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_reserve_id TEXT NOT NULL,
+    to_service_id TEXT NOT NULL,
+    material_id TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    transport_id TEXT,
+    dispatched_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+-- 阶段02板块4: 接收记录 (新表; 旧 receipt_records 为历史表, 原样保留不动)
+-- receipt_id 为消息自带业务字段, UNIQUE 用于"同一 receipt_id 重复上传不新增"
+CREATE TABLE IF NOT EXISTS receipt_records_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    receipt_id TEXT NOT NULL UNIQUE,
+    dispatch_id TEXT,
+    service_id TEXT NOT NULL,
+    material_id TEXT NOT NULL,
+    received_quantity INTEGER NOT NULL,
+    observed_at TEXT NOT NULL,
+    source_type TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS runs (

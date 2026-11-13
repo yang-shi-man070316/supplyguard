@@ -84,6 +84,48 @@ def history_transports(transport_id: str = None):
         close_conn(conn)
     return [dict(r) for r in rows]
 
+@app.get("/api/history/dispatches")
+def history_dispatches(from_reserve_id: str = None):
+    """阶段02: 调配记录历史 (只读)。传 from_reserve_id 返回该储备点发出的全部调配,
+    不传返回整表; 均按 dispatched_at 升序 (dispatch_id 升序兜底), 无匹配返回 []。"""
+    conn = get_conn()
+    try:
+        if from_reserve_id:
+            rows = conn.execute(
+                "SELECT * FROM dispatch_records WHERE from_reserve_id=? "
+                "ORDER BY dispatched_at ASC, dispatch_id ASC",
+                (from_reserve_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM dispatch_records "
+                "ORDER BY dispatched_at ASC, dispatch_id ASC"
+            ).fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
+@app.get("/api/history/receipts")
+def history_receipts(service_id: str = None):
+    """阶段02: 接收记录历史 (只读)。读新表 receipt_records_v2 (旧 receipt_records
+    原样保留不动)。传 service_id 过滤, 不传返回整表; 按 observed_at 升序
+    (id 升序兜底), 无匹配返回 []。"""
+    conn = get_conn()
+    try:
+        if service_id:
+            rows = conn.execute(
+                "SELECT * FROM receipt_records_v2 WHERE service_id=? "
+                "ORDER BY observed_at ASC, id ASC",
+                (service_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM receipt_records_v2 ORDER BY observed_at ASC, id ASC"
+            ).fetchall()
+    finally:
+        close_conn(conn)
+    return [dict(r) for r in rows]
+
 @app.websocket("/ws/guarantee")
 async def ws_guarantee(websocket: WebSocket):
     bind_loop(asyncio.get_running_loop())
