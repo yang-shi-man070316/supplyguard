@@ -7,6 +7,7 @@ from constants import RUN_TYPE
 from db import close_conn, get_conn
 from mqtt_client import ws_connections, bind_loop, current_snapshot
 from run_store_v2 import create_run, get_run, list_runs
+from t1_check import get_task_result, run_t1_execute
 
 app = FastAPI(title="SupplyGuard‑阶段01 实时数据流")
 
@@ -188,8 +189,8 @@ def list_evidences(evidence_type: str = None, source_id: str = None):
 
 # ============================================================
 # 阶段03板块2: run 生命周期接口 (reality run + 快照冻结)
-# 只做 run 创建/查询与快照抓取冻结, 不做任何 T1~T5 验算逻辑,
-# 不提供 /execute 执行接口。
+# 只做 run 创建/查询与快照抓取冻结, 不做任何 T1~T5 验算逻辑
+# (execute 验算接口由板块3 提供, 见下方)。
 # ============================================================
 
 class RunCreate(BaseModel):
@@ -234,6 +235,38 @@ def api_get_run(run_id: str):
     if run is None:
         raise HTTPException(status_code=404, detail="run %s not found" % run_id)
     return run
+
+
+# ============================================================
+# 阶段03板块3: T1 execute 验算接口 + 任务结果查询
+# 只实现 T1 校验闭环, 不处理 T2~T5。
+# ============================================================
+
+@app.post("/api/runs/{run_id}/execute")
+def api_execute_run(run_id: str):
+    """执行 T1 验算: 读 run 快照 → 逐条依赖检查写 dependency_checks
+    → T1 结果写 task_results → run 置 completed (写入 completed_at)。
+
+    - run_id 不存在 → 404; 已完成(completed)的 run → 409 拒绝执行
+    - 完成后 run 快照冻结, 禁止任何修改 (板块2 约束, 触发器兜底)
+    """
+    ok, http_status, msg, data = run_t1_execute(run_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+@app.get("/api/runs/{run_id}/task-result")
+def api_get_task_result(run_id: str, task_id: str = "T1"):
+    """查询任务结果: T1 任务结果 + 该 run 下全部依赖检查明细
+    (含 evidence / reason)。未执行时 task_result 为 null、明细为空数组。
+
+    - run_id 不存在 → 404; 板块3 只支持 task_id=T1 (其余任务板块4 实现)
+    """
+    ok, http_status, msg, data = get_task_result(run_id, task_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
 
 
 @app.websocket("/ws/guarantee")

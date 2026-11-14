@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>T1 验算工作台 · SupplyGuard</title>
+<style>
+/* 视觉语言与 Dashboard.html 保持一致: 同色板 / 同卡片骨架 / 同徽章体系 */
+:root{
+  --bg:#F1F4F3;           /* 页面底 */
+  --card:#FFFFFF;         /* 卡片 */
+  --ink:#1D2833;          /* 主文字 */
+  --sub:#66747E;          /* 次级文字 */
+  --line:#E6EAE8;         /* 分隔线 */
+  --shadow:0 1px 2px rgba(29,40,51,.04),0 6px 18px rgba(29,40,51,.06);
+  --r:14px;               /* 卡片圆角 */
+  --cinnabar:#C23B22;     /* blocked / 不满足 */
+  --green:#2E7D5B;        /* established / 满足 */
+  --amber:#A8721A;        /* 待验证 */
+  --num:"Bahnschrift","Segoe UI","PingFang SC",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  background:var(--bg);color:var(--ink);
+  font-size:14px;line-height:1.5;padding:0 20px 44px;
+}
+.num{font-family:var(--num);font-variant-numeric:tabular-nums}
+.wrap{max-width:1040px;margin:0 auto}
+
+/* ===== 顶栏 (同 Dashboard masthead) ===== */
+.masthead{
+  display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;
+  padding:26px 2px 18px;
+}
+.brand{display:flex;align-items:center;gap:14px}
+.logo{
+  width:44px;height:44px;border-radius:12px;background:var(--ink);color:#fff;
+  display:flex;align-items:center;justify-content:center;
+  font-size:20px;font-weight:700;box-shadow:var(--shadow);
+}
+.brand h1{font-size:21px;font-weight:700;letter-spacing:.01em;line-height:1.2}
+.brand .sub{color:var(--sub);font-size:13px;margin-top:1px}
+.meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.updated{color:var(--sub);font-size:12.5px}
+
+button{
+  font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);
+  padding:7px 16px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;
+  transition:border-color .15s,background .15s,transform .05s;
+}
+button:hover{border-color:#c9d2cf}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.5;cursor:wait}
+button.primary{background:var(--ink);border-color:var(--ink);color:#fff}
+button.primary:hover{background:#2a3a48;border-color:#2a3a48}
+button:focus-visible,tr.runrow:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+
+/* ===== 卡片骨架 (同 Dashboard) ===== */
+.card{
+  background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);
+  border:1px solid rgba(29,40,51,.05);
+  padding:18px 22px 20px;margin-top:14px;
+}
+.card h2{
+  font-size:13px;font-weight:650;color:var(--sub);letter-spacing:.06em;
+  display:flex;align-items:center;gap:9px;margin-bottom:14px;
+}
+.card h2::before{content:"";width:7px;height:7px;border-radius:2.5px;background:var(--ink)}
+.card h2 .hint{font-weight:400;letter-spacing:0;font-size:12px}
+
+/* 首次数据到达的整体亮相 (同 Dashboard) */
+body:not(.ready) .card{opacity:0;transform:translateY(8px)}
+body.ready .card{opacity:1;transform:none;transition:opacity .5s ease,transform .5s ease}
+body.ready .card:nth-of-type(1){transition-delay:.05s}
+body.ready .card:nth-of-type(2){transition-delay:.15s}
+@media (prefers-reduced-motion:reduce){
+  body:not(.ready) .card{opacity:1;transform:none}
+  body.ready .card{transition:none}
+}
+
+/* ===== 双栏 ===== */
+.cols{display:grid;grid-template-columns:320px 1fr;gap:14px;align-items:start}
+@media (max-width:820px){.cols{grid-template-columns:1fr}}
+
+/* ===== 台账表 (同 Dashboard ledger) ===== */
+table.ledger{width:100%;border-collapse:collapse}
+.ledger th,.ledger td{padding:9px 10px;border-bottom:1px solid #F0F3F1;text-align:left}
+.ledger thead th{font-weight:600;font-size:12px;color:var(--sub);vertical-align:bottom;padding-bottom:10px}
+.ledger tbody tr:last-child td{border-bottom:none}
+.ledger .row-name .code{font-size:13px;font-weight:650;display:block;line-height:1.2;font-family:var(--num)}
+.ledger .row-name .nm{font-size:12px;color:var(--sub);display:block}
+tr.runrow{cursor:pointer;transition:background .12s}
+tr.runrow:hover{background:#F4F7F5}
+tr.runrow.sel{background:#EEF3F0}
+tr.runrow.sel .row-name .code{color:var(--green)}
+
+/* ===== 徽章 (同 Dashboard badge 体系) ===== */
+.badge{
+  display:inline-block;padding:4px 12px;border-radius:999px;
+  font-size:12.5px;font-weight:650;line-height:1.4;
+}
+.badge--bad{background:#F9E9E5;color:var(--cinnabar)}
+.badge--good{background:#E7F2EC;color:var(--green)}
+.badge--warn{background:#F7F0E1;color:var(--amber)}
+.badge--flat{background:#EDF1F0;color:var(--sub)}
+.badge--dash{background:var(--card);color:var(--sub);border:1px dashed #c9d2cf}
+
+/* ===== run 元信息 pill 行 ===== */
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.pill{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:4px 12px;border-radius:999px;font-size:12.5px;font-weight:600;line-height:1.4;
+  background:#EDF1F0;color:var(--sub);
+}
+.pill b{font-family:var(--num);font-weight:650;color:var(--ink)}
+.pill.flat{background:#EDF1F0;color:var(--sub)}
+
+/* ===== T1 结论区 ===== */
+.t1head{display:flex;justify-content:space-between;align-items:center;
+        gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.t1name{font-size:15px;font-weight:700}
+.t1desc{color:var(--sub);font-size:12.5px;margin-top:2px}
+.verdict{
+  display:inline-flex;align-items:center;gap:10px;
+  padding:9px 22px;border-radius:999px;font-size:20px;font-weight:700;line-height:1.3;
+}
+.verdict i{width:10px;height:10px;border-radius:50%;font-style:normal}
+.verdict--good{background:#E7F2EC;color:var(--green)}
+.verdict--good i{background:var(--green)}
+.verdict--bad{background:#F9E9E5;color:var(--cinnabar)}
+.verdict--bad i{background:var(--cinnabar)}
+.verdict--warn{background:#F7F0E1;color:var(--amber)}
+.verdict--warn i{background:var(--amber)}
+.verdict--flat{background:#EDF1F0;color:var(--sub)}
+.verdict--flat i{background:var(--sub)}
+
+/* ===== 依赖分布条 ===== */
+.distbox{background:#F6F8F7;border:1px solid var(--line);border-radius:10px;
+         padding:14px 16px;margin-bottom:16px}
+.distbar{display:flex;height:10px;border-radius:99px;overflow:hidden;
+         background:var(--line);margin:6px 0 12px}
+.distbar i{display:block;height:100%}
+.distbar i.s{background:var(--green)}
+.distbar i.u{background:var(--cinnabar)}
+.distbar i.k{background:#B9C2C9}
+.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:var(--sub)}
+.legend b{font-weight:650;color:var(--ink)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:99px;
+     margin-right:5px;vertical-align:baseline}
+
+/* ===== 依赖明细 (ledger 风格) ===== */
+.deps-title{font-size:13px;font-weight:650;color:var(--sub);letter-spacing:.06em;
+            display:flex;align-items:center;gap:9px;margin:6px 0 10px;cursor:pointer;
+            user-select:none}
+.deps-title::before{content:"";width:7px;height:7px;border-radius:2.5px;background:var(--ink)}
+.deps-title::after{content:"展开 ▾";font-size:12px;font-weight:400;letter-spacing:0;
+                   color:var(--sub);margin-left:auto}
+.deps-title.open::after{content:"收起 ▴"}
+.deps-table{width:100%;border-collapse:collapse}
+.deps-table th,.deps-table td{padding:9px 10px;border-bottom:1px solid #F0F3F1;
+                              text-align:left;vertical-align:top}
+.deps-table thead th{font-weight:600;font-size:12px;color:var(--sub);padding-bottom:10px}
+.deps-table tbody tr:last-child td{border-bottom:none}
+.deps-table .depkey{font-family:var(--num);font-size:12.5px;font-weight:650}
+.reason{color:var(--sub);font-size:12.5px}
+details.ev{font-size:12.5px}
+details.ev summary{cursor:pointer;color:var(--ink);font-size:12.5px;font-weight:600}
+pre{background:#F6F8F7;border:1px solid var(--line);border-radius:8px;
+    padding:8px 10px;font-size:11.5px;font-family:var(--num);overflow:auto;
+    max-height:180px;margin:6px 0 0;white-space:pre-wrap;word-break:break-all}
+.summary-line{color:var(--sub);font-size:12.5px;margin-top:12px;
+              border-top:1px solid #F0F3F1;padding-top:10px}
+
+/* ===== 空态 (同 Dashboard) ===== */
+.empty{
+  margin-top:14px;border:1px dashed var(--line);border-radius:var(--r);
+  background:var(--card);padding:36px 20px;text-align:center;color:var(--sub);
+}
+.empty b{color:var(--ink);font-weight:650}
+.empty p{margin-top:8px;font-size:12.5px}
+.hidden{display:none}
+
+@media (max-width:820px){
+  .masthead{flex-direction:column;align-items:flex-start;gap:12px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="brand">
+      <div class="logo">验</div>
+      <div>
+        <h1>T1 验算工作台</h1>
+        <p class="sub">SupplyGuard 阶段03 · 关键服务点最低需求保障快照验算闭环</p>
+      </div>
+    </div>
+    <div class="meta">
+      <button class="primary" id="btnNew" onclick="newRun()">新建 run 并验算</button>
+      <button onclick="refreshRuns()">刷新</button>
+      <span class="updated" id="busy"></span>
+    </div>
+  </header>
+
+  <div class="cols">
+    <section class="card">
+      <h2>验算台账 <span class="hint">历史 run 只读，禁止修改</span></h2>
+      <table class="ledger">
+        <thead><tr><th>run 编号</th><th>场景</th><th>状态</th></tr></thead>
+        <tbody id="runBody"></tbody>
+      </table>
+    </section>
+
+    <section class="card" id="detailPanel">
+      <h2>验算详情 <span class="hint">快照冻结 · completed 后不可修改</span></h2>
+      <div class="empty">从台账中选择一个 run，或点击「新建 run 并验算」。<br>
+        系统会抓取当前时刻的快照并执行 T1 判定。</div>
+    </section>
+  </div>
+
+</div>
+
+<script>
+const API = "http://127.0.0.1:8000";
+
+const VERDICT = {
+  established:         {cls: "verdict--good", word: "保障成立"},
+  blocked:             {cls: "verdict--bad",  word: "保障受阻"},
+  pending_verification:{cls: "verdict--warn", word: "待验证"},
+  unknown:             {cls: "verdict--flat", word: "无法判定"}
+};
+const DEP_TEXT = {satisfied: "满足", unsatisfied: "不满足", unknown: "未知"};
+const DEP_BADGE = {satisfied: "badge--good", unsatisfied: "badge--bad", unknown: "badge--flat"};
+
+let selectedRunId = null;
+
+async function api(path, opts) {
+  const res = await fetch(API + path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || (res.status + " " + res.statusText));
+  return body;
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function fmtTime(s) {
+  return (s || "").replace("T", " ");
+}
+
+async function refreshRuns() {
+  const runs = await api("/api/runs");
+  const tb = document.getElementById("runBody");
+  if (!runs.length) {
+    tb.innerHTML = '<tr><td colspan="3"><div class="empty"><b>暂无验算记录</b>' +
+      '<p>点「新建 run 并验算」生成第一条。</p></div></td></tr>';
+    return;
+  }
+  tb.innerHTML = runs.map(r => {
+    const badge = r.run_status === "completed"
+      ? '<span class="badge badge--good">已验算</span>'
+      : '<span class="badge badge--dash">待验算</span>';
+    return `
+    <tr class="runrow${r.run_id === selectedRunId ? " sel" : ""}" tabindex="0"
+        onclick="selectRun('${esc(r.run_id)}')"
+        onkeydown="if(event.key==='Enter')selectRun('${esc(r.run_id)}')">
+      <td class="row-name"><span class="code">${esc(r.run_id)}</span>
+        <span class="nm">${esc(fmtTime(r.created_at).slice(0, 16))}</span></td>
+      <td>${esc(r.scenario_id)}</td>
+      <td>${badge}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function newRun() {
+  const btn = document.getElementById("btnNew");
+  const busy = document.getElementById("busy");
+  btn.disabled = true;
+  try {
+    busy.textContent = "抓取当前快照中…";
+    const run = await api("/api/runs", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({scenario_id: "S1"})
+    });
+    busy.textContent = "已建 " + run.run_id + "，执行 T1 判定…";
+    const result = await api("/api/runs/" + run.run_id + "/execute", {method: "POST"});
+    busy.textContent = "";
+    selectedRunId = run.run_id;
+    await refreshRuns();
+    renderDetail(result);
+  } catch (e) {
+    busy.textContent = "";
+    alert("操作失败：" + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function selectRun(runId) {
+  selectedRunId = runId;
+  await refreshRuns();
+  try {
+    const data = await api("/api/runs/" + runId + "/task-result?task_id=T1");
+    renderDetail(data);
+  } catch (e) {
+    alert("加载失败：" + e.message);
+  }
+}
+
+function distBox(checks) {
+  const n = {satisfied: 0, unsatisfied: 0, unknown: 0};
+  checks.forEach(c => { if (n[c.status] !== undefined) n[c.status]++; });
+  if (!checks.length) return "";
+  const seg = (k, cls) => n[k] ? `<i class="${cls}" style="flex:${n[k]}"></i>` : "";
+  return `
+    <div class="distbox">
+      <div class="distbar">${seg("satisfied","s")}${seg("unsatisfied","u")}${seg("unknown","k")}</div>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--green)"></span>满足 <b>${n.satisfied}</b></span>
+        <span><span class="dot" style="background:var(--cinnabar)"></span>不满足 <b>${n.unsatisfied}</b></span>
+        <span><span class="dot" style="background:#B9C2C9"></span>未知 <b>${n.unknown}</b></span>
+        <span>共 <b>${checks.length}</b> 项检查</span>
+      </div>
+    </div>`;
+}
+
+function renderDetail(data) {
+  const panel = document.getElementById("detailPanel");
+  const tr = data.task_result;
+  const checks = data.dependency_checks || [];
+  const v = VERDICT[tr?.result_status] || {cls: "verdict--flat", word: "未验算"};
+
+  const pills = `
+    <div class="pills">
+      <span class="pill">场景 <b>${esc(data.scenario_id)}</b></span>
+      <span class="pill">类型 <b>${esc(data.run_type)}</b></span>
+      <span class="pill">run 状态 <b>${esc(data.run_status)}</b></span>
+      <span class="pill">创建 <b>${esc(fmtTime(data.created_at) || "—")}</b></span>
+      <span class="pill">完成 <b>${esc(fmtTime(data.completed_at) || "—")}</b></span>
+      <span class="pill flat">编号 <b>${esc(data.run_id)}</b></span>
+    </div>`;
+
+  let depsHtml = "";
+  if (!tr) {
+    depsHtml = `<div class="empty"><b>该 run 尚未执行验算</b>
+      <p>历史 run 只读、无法补执行 —— 请新建一个 run 完成判定。</p></div>`;
+  } else {
+    const rows = checks.length ? checks.map(c => `
+      <tr>
+        <td class="depkey">${esc(c.dep_key)}</td>
+        <td>${esc(c.evidence?.service_id ?? "—")} · ${esc(c.evidence?.material_id ?? "—")}</td>
+        <td><span class="badge ${DEP_BADGE[c.status] || "badge--flat"}">${DEP_TEXT[c.status] || esc(c.status)}</span></td>
+        <td><details class="ev"><summary>查看证据</summary><pre>${esc(JSON.stringify(c.evidence, null, 2))}</pre></details></td>
+        <td class="reason">${esc(c.reason)}</td>
+      </tr>`).join("")
+      : `<tr><td colspan="5" style="text-align:center;color:var(--sub)">无依赖检查明细</td></tr>`;
+    depsHtml = `
+      <div class="deps-title" onclick="this.classList.toggle('open');
+           this.nextElementSibling.classList.toggle('hidden')">依赖检查明细</div>
+      <div>
+        <table class="deps-table">
+          <thead><tr><th>依赖键</th><th>检查对象</th><th>结论</th><th>证据</th><th>理由</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        ${tr.summary_reason ? `<div class="summary-line">${esc(tr.summary_reason)}</div>` : ""}
+      </div>`;
+  }
+
+  panel.innerHTML = `
+    <h2>验算详情 <span class="hint">快照冻结 · completed 后不可修改</span></h2>
+    ${pills}
+    <div class="t1head">
+      <div>
+        <div class="t1name">T1 · 关键服务点最低需求保障</div>
+        <div class="t1desc">对每个关键服务点 × 每种物资：最新有效需求 → 最新有效签收 → 接收量 ≥ 需求量</div>
+      </div>
+      <span class="verdict ${v.cls}"><i></i>${esc(v.word)}</span>
+    </div>
+    ${distBox(checks)}
+    ${depsHtml}`;
+}
+
+refreshRuns().then(async () => {
+  // 打开页面自动展示最新一份验算单
+  const first = document.querySelector("#runBody tr.runrow");
+  if (first) await selectRun(first.querySelector(".row-name .code").textContent.trim());
+  document.body.classList.add("ready");
+});
+</script>
+</body>
+</html>
