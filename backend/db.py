@@ -267,6 +267,35 @@ CREATE TABLE IF NOT EXISTS plan_results (
     UNIQUE(run_id, plan_id)
 );
 CREATE INDEX IF NOT EXISTS idx_plan_results_run ON plan_results(run_id);
+
+-- ============================================================
+-- 阶段05 板块1: 接收复核请求表 review_requests
+--   review_id TEXT 主键 (代码生成: BB03-REV-001/002...);
+--   status 枚举: pending / completed (默认 pending);
+--   created_at 自动填充; completed_at 复核完成时回填, pending 期间 NULL;
+--   幂等: 同一 (dispatch_id, service_id, material_id) 同时最多一条
+--   pending 复核单 (部分唯一索引 uq_review_pending_triple);
+--   复核完成后同一三元组允许再次生成 (再次待复核)。
+--   写入层: review_store.py (本板块只建表, 不提供 API 接口)。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS review_requests (
+    review_id TEXT PRIMARY KEY,
+    service_id TEXT NOT NULL,
+    material_id TEXT NOT NULL,
+    dispatch_id TEXT NOT NULL,
+    trigger_run_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','completed')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    completed_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_review_pending_triple
+    ON review_requests(dispatch_id, service_id, material_id)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_review_requests_status
+    ON review_requests(status);
+CREATE INDEX IF NOT EXISTS idx_review_requests_trigger_run
+    ON review_requests(trigger_run_id);
 """
 
 # 阶段03文档重建: 旧版(第一次尝试, 字段不符文档)表 → 冻结名。
