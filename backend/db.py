@@ -171,6 +171,24 @@ CREATE TABLE IF NOT EXISTS hypothesis_result_snapshot (
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(run_id, name)
 );
+
+-- ============================================================
+-- 阶段02板块4: 统一证据表 evidence_v2 (只新增)
+-- 旧 evidence 表为历史遗留 (自增主键/retrieved_at), 原样保留不动;
+-- 本表按阶段02规格: evidence_id 用 UUID (代码生成), 无 retrieved_at。
+-- status 枚举: ok / unavailable / error; evidence_type 枚举:
+-- stock / demand / dispatch / receipt / transport。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS evidence_v2 (
+    evidence_id TEXT PRIMARY KEY,
+    evidence_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('ok','unavailable','error')),
+    value_json TEXT,
+    observed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    error_message TEXT
+);
 """
 
 

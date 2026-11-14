@@ -12,6 +12,7 @@ run 存在状态字段 (pending / completed)。核心规则:
 
 import json
 import sqlite3
+import uuid
 from datetime import datetime, timedelta
 
 from db import close_conn, get_conn
@@ -1500,3 +1501,61 @@ def compare_reality_vs_whatif(run_id: str, snapshot_id: str) -> tuple:
         "reality_checked_at": latest_ts,
         "comparison": comparison,
     }
+
+
+# ============================================================
+# 阶段02板块4: 统一证据表 evidence_v2 (只新增, 不改动任何已有函数)
+# ============================================================
+_ALLOWED_EVIDENCE_TYPES = {"stock", "demand", "dispatch", "receipt", "transport"}
+_ALLOWED_EVIDENCE_STATUS = {"ok", "unavailable", "error"}
+
+
+def save_evidence(evidence_type, source_id, status, value_json, observed_at,
+                  error_message):
+    """写入一条统一证据到 evidence_v2 (只增不改, 禁止覆盖历史)。
+
+    入参校验 (代码层, 不合法直接抛 ValueError, 不落库):
+        evidence_type  ∈ {stock, demand, dispatch, receipt, transport}
+        status         ∈ {ok, unavailable, error}
+        source_id      非空 str (关联外部业务记录ID, 如 demand_id/dispatch_id/receipt_id)
+        value_json     None 或 str (原始观测/原始报文 JSON 字符串; 获取失败传 None 存 NULL)
+        observed_at    非空 str (业务事件发生的观测时间)
+        error_message  status=ok 时固定存空字符串 ""; unavailable/error 必须为非空 str
+
+    evidence_id 由 UUID 生成 (主键); created_at 由数据库默认 NOW() 填充。
+    成功返回 (True, evidence_id); 数据库异常返回 (False, 错误信息), 不抛出。
+    """
+    if evidence_type not in _ALLOWED_EVIDENCE_TYPES:
+        raise ValueError("invalid evidence_type: %r" % evidence_type)
+    if status not in _ALLOWED_EVIDENCE_STATUS:
+        raise ValueError("invalid status: %r" % status)
+    if not isinstance(source_id, str) or not source_id:
+        raise ValueError("source_id must be a non-empty str")
+    if value_json is not None and not isinstance(value_json, str):
+        raise ValueError("value_json must be str or None")
+    if not isinstance(observed_at, str) or not observed_at:
+        raise ValueError("observed_at must be a non-empty str")
+    if status == "ok":
+        error_message = ""  # 规则: status=ok 时固定为空字符串
+    else:
+        if not isinstance(error_message, str) or not error_message:
+            raise ValueError(
+                "error_message must be a non-empty str when status=%r" % status)
+
+    evidence_id = str(uuid.uuid4())
+    try:
+        conn = get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO evidence_v2 "
+                "(evidence_id, evidence_type, source_id, status, value_json, "
+                "observed_at, error_message) VALUES (?,?,?,?,?,?,?)",
+                (evidence_id, evidence_type, source_id, status,
+                 value_json, observed_at, error_message),
+            )
+            conn.commit()
+        finally:
+            close_conn(conn)
+    except sqlite3.Error as exc:
+        return False, "db error: %s" % exc
+    return True, evidence_id
