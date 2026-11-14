@@ -22,6 +22,7 @@ from pathlib import Path
 
 from constants import (
     DEPENDENCY_STATUS,
+    PLAN_RESULT_STATUS,
     RUN_ID_PREFIX,
     RUN_STATUS,
     RUN_TYPE,
@@ -36,6 +37,7 @@ DB_PATH = Path(__file__).parent / "bb03.db"
 _DEPS_STATUS_SQL = ", ".join("'%s'" % s for s in DEPENDENCY_STATUS)
 _TASK_STATUS_SQL = ", ".join("'%s'" % s for s in TASK_RESULT_STATUS)
 _RUN_STATUS_SQL = ", ".join("'%s'" % s for s in RUN_STATUS)
+_PLAN_STATUS_SQL = ", ".join("'%s'" % s for s in PLAN_RESULT_STATUS)
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS stock_observations (
@@ -222,6 +224,49 @@ CREATE TABLE IF NOT EXISTS evidence_v2 (
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     error_message TEXT
 );
+
+-- ============================================================
+-- 阶段04 板块1: 缺口识别与计划存储 3 张新表
+--   blockers:        缺口记录; 同一 run 同一 (服务点, 物资) 只保留一条
+--                    (UNIQUE 约束 + gap_check.py UPSERT 写入)
+--   plan_definitions:调配计划定义 (本板块只建表, 写入由后续板块实现)
+--   plan_results:    计划执行结论; status 仅 executable / non_executable
+-- ============================================================
+CREATE TABLE IF NOT EXISTS blockers (
+    blocker_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    service_id TEXT NOT NULL,
+    material_id TEXT NOT NULL,
+    required_quantity INTEGER NOT NULL,
+    valid_received INTEGER NOT NULL,
+    gap INTEGER NOT NULL,
+    reason_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(run_id, service_id, material_id)
+);
+CREATE INDEX IF NOT EXISTS idx_blockers_run ON blockers(run_id);
+CREATE TABLE IF NOT EXISTS plan_definitions (
+    plan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    plan_name TEXT NOT NULL,
+    reserve_id TEXT NOT NULL,
+    vehicle_id TEXT NOT NULL,
+    route_id TEXT NOT NULL,
+    material_id TEXT NOT NULL,
+    transfer_qty INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_plan_definitions_run ON plan_definitions(run_id);
+CREATE TABLE IF NOT EXISTS plan_results (
+    plan_result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    plan_id INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ({_PLAN_STATUS_SQL})),
+    reason_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(run_id, plan_id)
+);
+CREATE INDEX IF NOT EXISTS idx_plan_results_run ON plan_results(run_id);
 """
 
 # 阶段03文档重建: 旧版(第一次尝试, 字段不符文档)表 → 冻结名。

@@ -24,6 +24,9 @@ TASK_RESULT_STATUS = ["established", "blocked", "pending_verification", "unknown
 # ---- run 状态枚举 (runs.run_status) ----
 RUN_STATUS = ["pending", "completed"]
 
+# ---- 计划结果状态枚举 (plan_results.status, 阶段04板块1) ----
+PLAN_RESULT_STATUS = ["executable", "non_executable"]
+
 # ---- run_id 生成规则: BB03-RUN-001 / BB03-RUN-002 / ... 自增 ----
 RUN_ID_PREFIX = "BB03-RUN-"
 RUN_ID_DIGITS = 3
