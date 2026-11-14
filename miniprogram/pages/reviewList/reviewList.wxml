@@ -1,0 +1,61 @@
+<view class="page">
+
+  <!-- 顶部 hero: 待办统计 -->
+  <view class="hero">
+    <view class="hero-main">
+      <view class="hero-num num">{{reviews.length}}</view>
+      <view class="hero-unit">单待复核</view>
+    </view>
+    <view class="hero-meta">
+      <view class="hero-text">签收提交入口</view>
+      <view class="hero-updated" wx:if="{{updatedAt}}">{{updatedAt}} 更新</view>
+      <view class="hero-updated" wx:else>下拉刷新同步待办</view>
+    </view>
+  </view>
+
+  <!-- 错误横幅 -->
+  <view class="banner banner-err" wx:if="{{error}}">{{error}}</view>
+
+  <!-- 加载态 -->
+  <view class="empty" wx:if="{{loading && reviews.length === 0}}">
+    <view class="empty-ic">⏳</view>
+    <view class="empty-t">加载待复核列表…</view>
+  </view>
+
+  <!-- 空态 -->
+  <view class="empty" wx:elif="{{!loading && reviews.length === 0 && !error}}">
+    <view class="empty-ic">✅</view>
+    <view class="empty-t">暂无待复核签收单</view>
+    <view class="empty-s">后端 /api/reviews/pending 返回空列表，下拉可刷新</view>
+  </view>
+
+  <!-- 待办列表 -->
+  <view class="list" wx:else>
+    <view
+      class="item"
+      wx:for="{{reviews}}"
+      wx:key="review_id"
+      data-index="{{index}}"
+      bindtap="openReview"
+      hover-class="item-hover"
+    >
+      <view class="item-ic num">{{item.material_id}}</view>
+      <view class="item-main">
+        <view class="rid num">{{item.review_id}}</view>
+        <view class="kv">
+          <text class="kv-k">调配单</text><text class="kv-v num">{{item.dispatch_id}}</text>
+          <text class="kv-k">服务点</text><text class="kv-v num">{{item.service_id}}</text>
+        </view>
+        <view class="kv">
+          <text class="kv-k">物资</text><text class="kv-v num">{{item.material_id}}</text>
+          <text class="badge badge-info">待复核</text>
+        </view>
+      </view>
+      <view class="item-side">
+        <view class="time num">{{item.timeText}}</view>
+        <view class="go">›</view>
+      </view>
+    </view>
+  </view>
+
+</view>

@@ -1,0 +1,141 @@
+.page {
+  padding-bottom: 48rpx;
+}
+
+/* ===== 顶部 hero ===== */
+.hero {
+  margin: 24rpx 24rpx 28rpx;
+  padding: 40rpx 36rpx;
+  border-radius: 28rpx;
+  background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+  color: #FFFFFF;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 14rpx 36rpx rgba(29, 78, 216, .28);
+}
+
+.hero-main {
+  display: flex;
+  align-items: baseline;
+  gap: 16rpx;
+}
+
+.hero-num {
+  font-size: 88rpx;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: .01em;
+}
+
+.hero-unit {
+  font-size: 27rpx;
+  font-weight: 600;
+  color: rgba(255, 255, 255, .82);
+}
+
+.hero-meta {
+  text-align: right;
+}
+
+.hero-text {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: rgba(255, 255, 255, .92);
+}
+
+.hero-updated {
+  font-size: 22rpx;
+  color: rgba(255, 255, 255, .62);
+  margin-top: 6rpx;
+}
+
+/* ===== 待办列表 ===== */
+.item {
+  display: flex;
+  align-items: center;
+  gap: 22rpx;
+  background: var(--card);
+  border: 1rpx solid var(--line);
+  border-radius: 24rpx;
+  padding: 28rpx 26rpx;
+  margin: 0 24rpx 20rpx;
+  box-shadow: 0 2rpx 8rpx rgba(26, 34, 48, .03), 0 12rpx 28rpx rgba(26, 34, 48, .05);
+}
+
+.item-hover {
+  border-color: #A8C5F2;
+  transform: translateY(2rpx);
+  box-shadow: 0 2rpx 6rpx rgba(26, 34, 48, .06);
+}
+
+/* 物资图标块 */
+.item-ic {
+  width: 78rpx;
+  height: 78rpx;
+  border-radius: 22rpx;
+  background: linear-gradient(135deg, #EDF3FE 0%, #D8E5FC 100%);
+  color: var(--primary);
+  font-weight: 700;
+  font-size: 34rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.rid {
+  font-size: 30rpx;
+  font-weight: 700;
+  margin-bottom: 8rpx;
+}
+
+.kv {
+  font-size: 24rpx;
+  color: var(--sub);
+  margin-top: 4rpx;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.kv-k {
+  margin-right: 8rpx;
+}
+
+.kv-v {
+  color: var(--ink);
+  font-weight: 600;
+  margin-right: 22rpx;
+}
+
+.kv .badge {
+  margin-left: 2rpx;
+}
+
+.item-side {
+  text-align: right;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.time {
+  font-size: 22rpx;
+  color: var(--sub);
+  margin-bottom: 8rpx;
+}
+
+.go {
+  color: #B3BCC8;
+  font-size: 40rpx;
+  line-height: 1;
+  font-weight: 700;
+}

@@ -1,0 +1,154 @@
+<view class="page">
+
+  <block wx:if="{{!success}}">
+    <!-- 警告横幅: 复核单已不在待复核列表 -->
+    <view class="banner banner-warn" wx:if="{{warning}}">{{warning}}</view>
+
+    <!-- 错误横幅: 提交失败 / 无法连接后端 -->
+    <view class="banner banner-err" wx:if="{{error}}">{{error}}</view>
+
+    <!-- 复核单信息 -->
+    <view class="card head-card">
+      <view class="head-row">
+        <view class="head-ic num">{{materialId || '?'}}</view>
+        <view class="head-main">
+          <view class="rid num">{{reviewId || '-'}}</view>
+          <view class="head-sub">提交后自动关闭复核单并触发 T1~T5 验算</view>
+        </view>
+        <text class="badge {{warning ? 'badge-warn' : 'badge-info'}}">{{warning ? '已处理' : '待复核'}}</text>
+      </view>
+      <view class="kv-grid">
+        <view class="kv-cell">
+          <text class="kv-k">调配单</text>
+          <text class="kv-v num">{{dispatchId || '-'}}</text>
+        </view>
+        <view class="kv-cell">
+          <text class="kv-k">服务点</text>
+          <text class="kv-v num">{{serviceId || '-'}}</text>
+        </view>
+        <view class="kv-cell">
+          <text class="kv-k">物资</text>
+          <text class="kv-v num">{{materialId || '-'}}</text>
+        </view>
+        <view class="kv-cell">
+          <text class="kv-k">触发 run</text>
+          <text class="kv-v num">{{triggerRunId || '-'}}</text>
+        </view>
+      </view>
+      <view class="created-line" wx:if="{{createdText}}">
+        <text class="created-k">创建于</text>
+        <text class="created-v num">{{createdText}}</text>
+      </view>
+    </view>
+
+    <!-- 签收内容表单 -->
+    <view class="card">
+      <view class="card-title">签收内容</view>
+
+      <view class="field">
+        <view class="label">实收数量<text class="req">*</text></view>
+        <view class="qty-row">
+          <input
+            class="qty-input num"
+            type="number"
+            placeholder="0"
+            value="{{qty}}"
+            bindinput="onQtyInput"
+          />
+          <text class="qty-unit">件</text>
+        </view>
+        <view class="field-hint">非负整数 · 累加进该 (服务点 × 物资) 的有效接收总量</view>
+      </view>
+
+      <view class="field">
+        <view class="label">接收时间<text class="req">*</text><text class="opt">默认当前，可修改</text></view>
+        <view class="picker-row">
+          <picker class="picker" mode="date" value="{{obsDate}}" bindchange="onDateChange">
+            <view class="picker-box">
+              <text class="picker-k">日期</text>
+              <text class="picker-v num">{{obsDate}}</text>
+            </view>
+          </picker>
+          <picker class="picker" mode="time" value="{{obsTime}}" bindchange="onTimeChange">
+            <view class="picker-box">
+              <text class="picker-k">时间</text>
+              <text class="picker-v num">{{obsTime}}</text>
+            </view>
+          </picker>
+        </view>
+      </view>
+
+      <view class="field">
+        <view class="label">现场备注<text class="opt">可选，≤ 500 字</text></view>
+        <textarea
+          class="textarea"
+          placeholder="现场清点、包装破损等备注（随签收记录存证）"
+          maxlength="500"
+          value="{{note}}"
+          bindinput="onNoteInput"
+        ></textarea>
+        <view class="field-hint right num">{{note.length}} / 500</view>
+      </view>
+
+      <view class="field">
+        <view class="label">照片凭证<text class="opt">界面预留，本阶段不上传（阶段06 迭代）</text></view>
+        <view class="photo">
+          <view class="photo-ic">📷</view>
+          <view class="photo-main">
+            <view class="photo-t">拍照 / 上传签收照片</view>
+            <view class="photo-s">阶段06 迭代支持图片上传与后端存储</view>
+          </view>
+          <view class="photo-tag">占位</view>
+        </view>
+      </view>
+
+      <view class="field">
+        <view class="label">签收单号<text class="opt">前端自动生成，全局唯一</text></view>
+        <view class="readonly">
+          <text class="readonly-tag">receipt_id</text>
+          <text class="num readonly-v">{{receiptId}}</text>
+        </view>
+      </view>
+
+      <view class="field-hint err" wx:if="{{formErr}}">{{formErr}}</view>
+
+      <view class="actions">
+        <button
+          class="btn-primary submit"
+          disabled="{{submitting || warning || !canSubmit}}"
+          bindtap="submit"
+        >{{submitting ? busyText : '提交签收'}}</button>
+      </view>
+    </view>
+  </block>
+
+  <!-- 成功视图 -->
+  <block wx:else>
+    <view class="success-hero">
+      <view class="ok-circle">✓</view>
+      <view class="ok-title">签收提交成功</view>
+      <view class="ok-sub">复核单已关闭 · 新 run 已完成 T1~T5 自动验算</view>
+    </view>
+
+    <view class="card">
+      <view class="card-title">新生成验算 run</view>
+      <view class="new-run num">{{newRunId}}</view>
+      <view class="result-meta">签收单 {{receiptId}} · 原 trigger run 保持只读</view>
+    </view>
+
+    <view class="card">
+      <view class="card-title">T1~T5 自动验算结果</view>
+      <view class="taskline" wx:for="{{tasks}}" wx:key="task_id">
+        <view class="task-idx num">{{item.task_id}}</view>
+        <text class="tn">{{item.task_name}}</text>
+        <text class="badge {{item.cls}}">{{item.word}}</text>
+      </view>
+      <view class="hint" wx:if="{{tasks.length === 0}}">无验算结果</view>
+    </view>
+
+    <view class="actions back-actions">
+      <button class="btn-primary submit" bindtap="goBack">返回待复核列表</button>
+    </view>
+  </block>
+
+</view>

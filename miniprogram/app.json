@@ -1,0 +1,15 @@
+{
+  "pages": [
+    "pages/reviewList/reviewList",
+    "pages/reviewSubmit/reviewSubmit"
+  ],
+  "window": {
+    "navigationBarTitleText": "SupplyGuard 待复核",
+    "navigationBarBackgroundColor": "#2B6BE4",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#F2F6F4",
+    "backgroundTextStyle": "dark"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

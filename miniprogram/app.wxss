@@ -1,0 +1,149 @@
+/* 全局样式: SupplyGuard 主题 (清爽蓝) */
+page {
+  --primary: #2B6BE4;
+  --primary-deep: #1D4ED8;
+  --primary-soft: #EAF1FD;
+  --accent: #F59E0B;
+  --bg: #F4F6FA;
+  --card: #FFFFFF;
+  --ink: #1A2230;
+  --sub: #667080;
+  --line: #E4E8EF;
+  --danger: #DC2626;
+  --warn: #B45309;
+  --ok: #16A34A;
+
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 28rpx;
+  line-height: 1.5;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.card {
+  background: var(--card);
+  border: 1rpx solid var(--line);
+  border-radius: 24rpx;
+  padding: 32rpx;
+  margin: 0 24rpx 24rpx;
+  box-shadow: 0 2rpx 8rpx rgba(26, 34, 48, .03), 0 12rpx 32rpx rgba(26, 34, 48, .05);
+}
+
+.card-title {
+  font-size: 28rpx;
+  font-weight: 700;
+  margin-bottom: 24rpx;
+  letter-spacing: .01em;
+  display: flex;
+  align-items: center;
+}
+
+/* 标题前蓝色竖条 */
+.card-title::before {
+  content: "";
+  width: 6rpx;
+  height: 28rpx;
+  border-radius: 4rpx;
+  background: var(--primary);
+  margin-right: 14rpx;
+}
+
+.hint {
+  color: var(--sub);
+  font-size: 23rpx;
+  font-weight: 400;
+  margin-left: 10rpx;
+}
+
+.num {
+  font-family: Consolas, "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.banner {
+  margin: 0 24rpx 24rpx;
+  padding: 20rpx 26rpx;
+  border-radius: 16rpx;
+  font-size: 25rpx;
+  font-weight: 600;
+  border: 1rpx solid transparent;
+}
+
+.banner-err {
+  background: #FDECEC;
+  border-color: #F6C8C8;
+  color: var(--danger);
+}
+
+.banner-warn {
+  background: #FDF4E5;
+  border-color: #F2DDB2;
+  color: var(--warn);
+}
+
+.banner-ok {
+  background: #E9F7EE;
+  border-color: #C6E8D2;
+  color: var(--ok);
+}
+
+.badge {
+  display: inline-block;
+  font-size: 21rpx;
+  font-weight: 700;
+  padding: 6rpx 20rpx;
+  border-radius: 999rpx;
+  white-space: nowrap;
+}
+
+.badge-info { background: var(--primary-soft); color: var(--primary); border: 1rpx solid #CFE0FB; }
+.badge-good { background: #E9F7EE; color: var(--ok); border: 1rpx solid #C6E8D2; }
+.badge-bad  { background: #FDECEC; color: var(--danger); border: 1rpx solid #F6C8C8; }
+.badge-warn { background: #FDF4E5; color: var(--warn); border: 1rpx solid #F2DDB2; }
+.badge-flat { background: #EFF2F6; color: var(--sub); border: 1rpx solid #E4E8EF; }
+
+/* 主按钮: 蓝色渐变 */
+.btn-primary {
+  background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+  color: #FFFFFF;
+  border-radius: 18rpx;
+  font-size: 29rpx;
+  font-weight: 600;
+  border: none;
+  box-shadow: 0 10rpx 24rpx rgba(43, 107, 228, .30);
+}
+
+.btn-primary[disabled] {
+  background: #C7D2E4 !important;
+  color: #FFFFFF !important;
+  box-shadow: none !important;
+}
+
+.empty {
+  text-align: center;
+  color: var(--sub);
+  padding: 90rpx 60rpx 70rpx;
+}
+
+.empty-ic {
+  width: 120rpx;
+  height: 120rpx;
+  margin: 0 auto 26rpx;
+  border-radius: 50%;
+  background: var(--primary-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 56rpx;
+}
+
+.empty-t {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 10rpx;
+}
+
+.empty-s {
+  font-size: 24rpx;
+}
