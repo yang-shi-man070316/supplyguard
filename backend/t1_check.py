@@ -1,4 +1,4 @@
-"""阶段03板块3: T1 完整闭环 (execute 验算 + 结果落库 + run 完成).
+"""阶段03板块3: T1 校验判断 (板块4 起只负责 T1 纯判断, 落库由 task_execute 编排).
 
 T1 最小判断逻辑 (严格按阶段03文档):
     for each critical service point
@@ -8,21 +8,18 @@ T1 最小判断逻辑 (严格按阶段03文档):
             received >= required?
 
 实现口径:
-    - 数据来源: runs.input_snapshot_json 快照 (板块2 冻结, 不读实时观测表)
+    - 数据来源: 只读 input_snapshot_json 快照, 不读实时观测表
     - 检查对象: 快照 demands 中每条 (服务点, 物资) 需求
-    - 逐条判断 → 每条写一行 dependency_checks (dep_key 统一 T1-D1)
-    - 聚合写一行 task_results; 完成后 run 置 completed (原子闸门)
     - 依赖状态: satisfied / unsatisfied / unknown
     - 任务状态: 任一 unsatisfied → blocked; 全部 satisfied → established;
       无 unsatisfied 但有 unknown → pending_verification;
       快照无需求观测 → unknown
 
-只实现 T1, 不处理 T2~T5 校验逻辑。
+板块4 起本模块导出 check_t1(snapshot) 纯判断函数, 与 t2~t5_check 并行;
+T1 判断逻辑自板块3 起保持不变。
 """
 
 import json
-import sqlite3
-from datetime import datetime
 
 from db import close_conn, get_conn
 
@@ -40,10 +37,6 @@ T1_ALIGNED_RULE_NOTES = (
     "无 unsatisfied 但有 unknown → pending_verification; "
     "快照无需求观测 → unknown"
 )
-
-
-def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 def align_t1_meta(conn):
@@ -158,102 +151,34 @@ def _aggregate_task_status(checks) -> tuple:
         "无 unsatisfied 依赖, 但有%d项依赖无法判断, 待验证" % unknown_n)
 
 
-def run_t1_execute(run_id: str) -> tuple:
-    """执行 T1 验算并落库, 完成后 run 置 completed。
+def check_t1(snapshot: dict) -> dict:
+    """T1 纯判断 (只读快照, 不访问数据库)。
 
-    流程: 读 runs 行 (不存在 → 404; 非 pending → 409) → 解析快照
-    → 逐条判断 → 同事务写 dependency_checks + task_results
-    → UPDATE runs ... WHERE run_status='pending' 原子置 completed
-    (rowcount=0 → 整体回滚 409, 与触发器一起保证 completed 后任何修改被拒)。
-
-    返回 (ok, http_status, msg, data); 成功 data =
-    {run_id, run_status, completed_at, task_result, dependency_checks}。
+    返回 {"task_id", "checks":[{dep_key,dep_desc,status,evidence,reason}],
+          "task_status", "summary_reason"}。落库由 task_execute 编排。
     """
-    try:
-        conn = get_conn()
-        try:
-            align_t1_meta(conn)
-            row = conn.execute(
-                "SELECT * FROM runs WHERE run_id=?", (run_id,)
-            ).fetchone()
-            if row is None:
-                return False, 404, "run %s not found" % run_id, None
-            if row["run_status"] != "pending":
-                return False, 409, (
-                    "run %s is completed, not modifiable" % run_id), None
+    demands = snapshot.get("demands") or []
+    receipts = snapshot.get("receipts") or []
 
-            try:
-                snapshot = json.loads(row["input_snapshot_json"])
-            except (TypeError, ValueError):
-                return False, 500, "run %s input_snapshot_json invalid" % run_id, None
-            if not isinstance(snapshot, dict):
-                return False, 500, "run %s input_snapshot_json invalid" % run_id, None
-
-            demands = snapshot.get("demands") or []
-            receipts = snapshot.get("receipts") or []
-
-            # ---- T1 逐条判断 ----
-            check_rows = [_judge_demand(d, receipts) for d in demands]
-            if not check_rows:
-                # 快照无需求观测: 写一条占位检查, 任务结果直接 unknown
-                # (不走聚合, 避免落入 pending_verification)
-                check_rows = [{
-                    "dep_key": T1_DEP_KEY, "dep_desc": T1_DEP_DESC,
-                    "status": "unknown", "evidence": {},
-                    "reason": "快照中无需求观测, 无法判断",
-                }]
-                task_status, task_reason = "unknown", "快照中无需求观测, 无法判断"
-            else:
-                task_status, task_reason = _aggregate_task_status(check_rows)
-            completed_at = _now()
-
-            # ---- 落库 (同一事务; complete 更新为原子闸门) ----
-            for c in check_rows:
-                conn.execute(
-                    "INSERT INTO dependency_checks "
-                    "(run_id, task_id, dep_key, dep_desc, status, evidence, reason) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    (run_id, T1_TASK_ID, c["dep_key"], c["dep_desc"], c["status"],
-                     json.dumps(c["evidence"], ensure_ascii=False), c["reason"]),
-                )
-            cur_res = conn.execute(
-                "INSERT INTO task_results (run_id, task_id, result_status, summary_reason) "
-                "VALUES (?,?,?,?)",
-                (run_id, T1_TASK_ID, task_status, task_reason),
-            )
-            cur_run = conn.execute(
-                "UPDATE runs SET run_status='completed', completed_at=? "
-                "WHERE run_id=? AND run_status='pending'",
-                (completed_at, run_id),
-            )
-            if cur_run.rowcount == 0:
-                conn.rollback()
-                return False, 409, (
-                    "run %s is completed, not modifiable" % run_id), None
-            conn.commit()
-
-            checks_out = [dict(r) for r in conn.execute(
-                "SELECT * FROM dependency_checks WHERE run_id=? ORDER BY id",
-                (run_id,),
-            ).fetchall()]
-            result_out = dict(conn.execute(
-                "SELECT * FROM task_results WHERE run_id=? AND task_id=?",
-                (run_id, T1_TASK_ID),
-            ).fetchone())
-            return True, 200, "executed", {
-                "run_id": run_id,
-                "scenario_id": row["scenario_id"],
-                "run_type": row["run_type"],
-                "run_status": "completed",
-                "created_at": row["created_at"],
-                "completed_at": completed_at,
-                "task_result": _task_row_to_dict(result_out),
-                "dependency_checks": [_check_row_to_dict(c) for c in checks_out],
-            }
-        finally:
-            close_conn(conn)
-    except sqlite3.Error as exc:
-        return False, 500, "db error: %s" % exc, None
+    # ---- T1 逐条判断 ----
+    check_rows = [_judge_demand(d, receipts) for d in demands]
+    if not check_rows:
+        # 快照无需求观测: 写一条占位检查, 任务结果直接 unknown
+        # (不走聚合, 避免落入 pending_verification)
+        check_rows = [{
+            "dep_key": T1_DEP_KEY, "dep_desc": T1_DEP_DESC,
+            "status": "unknown", "evidence": {},
+            "reason": "快照中无需求观测, 无法判断",
+        }]
+        task_status, task_reason = "unknown", "快照中无需求观测, 无法判断"
+    else:
+        task_status, task_reason = _aggregate_task_status(check_rows)
+    return {
+        "task_id": T1_TASK_ID,
+        "checks": check_rows,
+        "task_status": task_status,
+        "summary_reason": task_reason,
+    }
 
 
 def _check_row_to_dict(row) -> dict:

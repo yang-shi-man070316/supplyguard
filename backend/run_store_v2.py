@@ -8,6 +8,8 @@
 快照冻结规则:
     - input_snapshot_json 在 create 时一次性写入「当前时刻」数据:
       服务点 / 物资 / 需求(每个服务点×物资最新一条) / 接收(全部签收记录)
+      / 库存(每个储备点×物资最新一条) / 运输(每个运输资源最新一条)
+      (板块4 起扩展库存/运输与各条目 created_at, 供 T2~T5 只读校验)
     - assumptions_json 初始为空 JSON 对象 {}
     - run_status=pending; created_at 由表默认填充
     - completed 之后快照禁止修改、禁止覆盖: 由板块1触发器
@@ -43,11 +45,14 @@ def _row_to_dict(row) -> dict:
 def _capture_snapshot(conn) -> dict:
     """抓取当前时刻快照 (与创建 run 同连接同事务, 保证口径一致)。
 
-    内容:
-        services   当前出现过的服务点列表 (需求/接收记录 distinct)
-        materials  当前出现过的物资列表 (需求/接收记录 distinct)
-        demands   每个 (服务点, 物资) 的最新一条需求观测
-        receipts  全部接收(签收)记录 (追加型数据, 全量)
+    内容 (板块4 起扩展为全量观测, 供 T1~T5 只读快照校验):
+        services    当前出现过的服务点列表 (需求/接收记录 distinct)
+        materials   当前出现过的物资列表 (需求/接收/库存 distinct)
+        demands    每个 (服务点, 物资) 的最新一条需求观测 (含 created_at)
+        receipts   全部接收(签收)记录 (追加型数据, 全量; 含 created_at)
+        stocks     每个 (储备点, 物资) 的最新一条库存观测 (含 created_at)
+        transports 每个运输资源的最新一条观测 (含 created_at)
+    各条目均带 created_at (落库时间), 供 T5 时间线倒挂校验。
     """
     services = [r[0] for r in conn.execute(
         "SELECT DISTINCT service_id FROM demand_records "
@@ -55,10 +60,11 @@ def _capture_snapshot(conn) -> dict:
     ).fetchall()]
     materials = [r[0] for r in conn.execute(
         "SELECT DISTINCT material_id FROM demand_records "
-        "UNION SELECT DISTINCT material_id FROM receipt_records_v2 ORDER BY 1"
+        "UNION SELECT DISTINCT material_id FROM receipt_records_v2 "
+        "UNION SELECT DISTINCT material_id FROM stock_observations ORDER BY 1"
     ).fetchall()]
     demands = [dict(r) for r in conn.execute(
-        "SELECT service_id, material_id, required_quantity, observed_at "
+        "SELECT service_id, material_id, required_quantity, observed_at, created_at "
         "FROM demand_records d "
         "WHERE d.demand_id = ("
         "  SELECT MAX(d2.demand_id) FROM demand_records d2 "
@@ -67,8 +73,24 @@ def _capture_snapshot(conn) -> dict:
     ).fetchall()]
     receipts = [dict(r) for r in conn.execute(
         "SELECT receipt_id, dispatch_id, service_id, material_id, "
-        "received_quantity, observed_at "
+        "received_quantity, observed_at, created_at "
         "FROM receipt_records_v2 ORDER BY observed_at, id"
+    ).fetchall()]
+    stocks = [dict(r) for r in conn.execute(
+        "SELECT reserve_id, material_id, quantity, observed_at, created_at "
+        "FROM stock_observations s "
+        "WHERE s.stock_id = ("
+        "  SELECT MAX(s2.stock_id) FROM stock_observations s2 "
+        "  WHERE s2.reserve_id = s.reserve_id AND s2.material_id = s.material_id)"
+        "ORDER BY reserve_id, material_id"
+    ).fetchall()]
+    transports = [dict(r) for r in conn.execute(
+        "SELECT transport_id, availability, capacity, observed_at, created_at "
+        "FROM transport_observations t "
+        "WHERE t.observation_id = ("
+        "  SELECT MAX(t2.observation_id) FROM transport_observations t2 "
+        "  WHERE t2.transport_id = t.transport_id)"
+        "ORDER BY transport_id"
     ).fetchall()]
     return {
         "snapshot_at": _now(),
@@ -76,6 +98,8 @@ def _capture_snapshot(conn) -> dict:
         "materials": materials,
         "demands": demands,
         "receipts": receipts,
+        "stocks": stocks,
+        "transports": transports,
     }
 
 

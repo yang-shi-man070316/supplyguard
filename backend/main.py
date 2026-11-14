@@ -7,7 +7,8 @@ from constants import RUN_TYPE
 from db import close_conn, get_conn
 from mqtt_client import ws_connections, bind_loop, current_snapshot
 from run_store_v2 import create_run, get_run, list_runs
-from t1_check import get_task_result, run_t1_execute
+from task_execute import run_execute_all
+from t1_check import get_task_result
 
 app = FastAPI(title="SupplyGuard‑阶段01 实时数据流")
 
@@ -244,13 +245,14 @@ def api_get_run(run_id: str):
 
 @app.post("/api/runs/{run_id}/execute")
 def api_execute_run(run_id: str):
-    """执行 T1 验算: 读 run 快照 → 逐条依赖检查写 dependency_checks
-    → T1 结果写 task_results → run 置 completed (写入 completed_at)。
+    """执行 T1~T5 全套验算 (板块4): 读 run 快照 → 串行执行 T1、T2、T3、T4、T5
+    → 每个任务独立写 dependency_checks + task_results
+    → 全部完成后 run 置 completed (写入 completed_at)。
 
     - run_id 不存在 → 404; 已完成(completed)的 run → 409 拒绝执行
-    - 完成后 run 快照冻结, 禁止任何修改 (板块2 约束, 触发器兜底)
+    - 整套执行同一事务; 完成后 run 快照冻结, 禁止任何修改 (触发器兜底)
     """
-    ok, http_status, msg, data = run_t1_execute(run_id)
+    ok, http_status, msg, data = run_execute_all(run_id)
     if not ok:
         raise HTTPException(status_code=http_status, detail=msg)
     return data
