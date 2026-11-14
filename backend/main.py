@@ -1,8 +1,12 @@
 import asyncio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from constants import RUN_TYPE
 from db import close_conn, get_conn
 from mqtt_client import ws_connections, bind_loop, current_snapshot
+from run_store_v2 import create_run, get_run, list_runs
 
 app = FastAPI(title="SupplyGuard‑阶段01 实时数据流")
 
@@ -181,6 +185,56 @@ def list_evidences(evidence_type: str = None, source_id: str = None):
     finally:
         close_conn(conn)
     return [dict(r) for r in rows]
+
+# ============================================================
+# 阶段03板块2: run 生命周期接口 (reality run + 快照冻结)
+# 只做 run 创建/查询与快照抓取冻结, 不做任何 T1~T5 验算逻辑,
+# 不提供 /execute 执行接口。
+# ============================================================
+
+class RunCreate(BaseModel):
+    """POST /api/runs 入参。"""
+    scenario_id: str
+    parent_run_id: str = None
+    run_type: str = RUN_TYPE
+
+
+@app.post("/api/runs", status_code=201)
+def api_create_run(body: RunCreate):
+    """创建 S1 reality run。
+
+    - run_id 自动生成 (BB03-RUN-001/002/... 自增)
+    - 抓取当前时刻服务点/物资/需求/接收数据冻结进 input_snapshot_json
+    - assumptions_json 初始为空 JSON 对象 {}
+    - run_status=pending; parent_run_id 默认 null; created_at 自动写入
+    """
+    if not body.scenario_id.strip():
+        raise HTTPException(status_code=400, detail="scenario_id required")
+    if body.run_type != RUN_TYPE:
+        raise HTTPException(status_code=400,
+                            detail="only run_type=%r supported" % RUN_TYPE)
+    ok, msg, run = create_run(body.scenario_id, body.parent_run_id, body.run_type)
+    if not ok:
+        raise HTTPException(status_code=500, detail=msg)
+    return run
+
+
+@app.get("/api/runs")
+def api_list_runs():
+    """run 列表: run_id / scenario_id / run_type / parent_run_id /
+    run_status / created_at / completed_at (不含快照列)。"""
+    return list_runs()
+
+
+@app.get("/api/runs/{run_id}")
+def api_get_run(run_id: str):
+    """单 run 完整详情 (含 input_snapshot_json / assumptions_json);
+    run_id 不存在返回 404。"""
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run %s not found" % run_id)
+    return run
+
 
 @app.websocket("/ws/guarantee")
 async def ws_guarantee(websocket: WebSocket):
