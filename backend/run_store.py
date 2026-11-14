@@ -1505,8 +1505,11 @@ def compare_reality_vs_whatif(run_id: str, snapshot_id: str) -> tuple:
 
 # ============================================================
 # 阶段02板块4: 统一证据表 evidence_v2 (只新增, 不改动任何已有函数)
+# 阶段06板块2: 新增 weather / rag 两种辅助证据类型 (只扩展枚举, 不改动
+# 判定逻辑; T1~T5 校验不读 evidence_v2, 新增类型不影响任何判定结果)
 # ============================================================
-_ALLOWED_EVIDENCE_TYPES = {"stock", "demand", "dispatch", "receipt", "transport"}
+_ALLOWED_EVIDENCE_TYPES = {"stock", "demand", "dispatch", "receipt",
+                           "transport", "weather", "rag"}
 _ALLOWED_EVIDENCE_STATUS = {"ok", "unavailable", "error"}
 
 
@@ -1515,7 +1518,8 @@ def save_evidence(evidence_type, source_id, status, value_json, observed_at,
     """写入一条统一证据到 evidence_v2 (只增不改, 禁止覆盖历史)。
 
     入参校验 (代码层, 不合法直接抛 ValueError, 不落库):
-        evidence_type  ∈ {stock, demand, dispatch, receipt, transport}
+        evidence_type  ∈ {stock, demand, dispatch, receipt, transport,
+                         weather, rag}   (weather/rag 为阶段06辅助证据)
         status         ∈ {ok, unavailable, error}
         source_id      非空 str (关联外部业务记录ID, 如 demand_id/dispatch_id/receipt_id)
         value_json     None 或 str (原始观测/原始报文 JSON 字符串; 获取失败传 None 存 NULL)

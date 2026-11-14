@@ -1,14 +1,24 @@
 import asyncio
 import json
 import sqlite3
+import sys
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# 阶段06板块2: 把项目根加入 sys.path, 使 backend 下运行时也能 import
+# analysis/ 下的统计与辅助证据模块 (独立运行这些模块时它们各自也有兜底)
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from analysis.rag_store import run_rag_query
+from analysis.weather_evidence import run_weather_evidence
 from constants import RUN_TYPE
 from db import close_conn, get_conn, next_run_id
 from gap_check import get_blockers
@@ -578,6 +588,46 @@ def api_submit_review_receipt(review_id: str, body: ReviewReceiptSubmit):
       reality run (原 trigger_run 只读) + 自动执行完整 T1~T5 验算。
     """
     ok, http_status, msg, data = _submit_review_receipt(review_id, body)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+# ============================================================
+# 阶段06板块2: 外部辅助证据接口 (天气 / RAG 检索, 只新增不改动)
+# - GET /api/weather  抓取实时天气, API 失败降级 status='unavailable'
+# - GET /api/rag?q=   保障知识库检索, 无匹配返回固定文本 "无可靠依据"
+# 两个接口的结果均写入 evidence_v2 辅助证据 (evidence_type 新增
+# weather/rag), 不参与也不修改 T1~T4 任何判定逻辑。
+# ============================================================
+
+@app.get("/api/weather")
+def api_get_weather():
+    """天气辅助证据查询 (阶段06板块2)。
+
+    - 调用天气 Web API (wttr.in, 超时 8s)
+    - API 不可用/超时/返回结构异常 → HTTP 200, 返回体 status='unavailable'
+      并携带 error_message (降级语义: 不抛 5xx, 不影响 T1~T4 判定)
+    - 结果写入 evidence_v2 (evidence_type='weather',
+      evidence status 与返回体 status 一致)
+    """
+    ok, http_status, msg, data = run_weather_evidence()
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+@app.get("/api/rag")
+def api_rag_query(q: str):
+    """RAG 保障知识库检索 (阶段06板块2)。
+
+    - 检索 rag_docs/ 知识文档, 返回 answer 与 citations 来源引用
+    - 无匹配 → answer 固定返回 "无可靠依据", citations 为空列表
+    - 结果写入 evidence_v2 (evidence_type='rag', status='ok',
+      matched 标记在 value_json 中; 无结果 ≠ 证据不可用)
+    - 查询参数 q 缺失/空白 → 400
+    """
+    ok, http_status, msg, data = run_rag_query(q)
     if not ok:
         raise HTTPException(status_code=http_status, detail=msg)
     return data
