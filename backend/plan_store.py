@@ -225,6 +225,66 @@ def get_plans(run_id: str) -> tuple:
     }
 
 
+def get_plans_with_results(run_id: str) -> tuple:
+    """合并查询候选方案 + 可行性判定结果 (阶段04板块4 只读接口用)。
+
+    plan_definitions LEFT JOIN plan_results: 每条方案携带 status
+    (executable / non_executable, 未判定为 None) 与结构化 reason_json。
+    run 不存在 → 404。
+    """
+    try:
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT run_id, run_status FROM runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return False, 404, "run %s not found" % run_id, None
+            rows = conn.execute(
+                "SELECT pd.plan_id, pd.plan_name, pd.reserve_id, pd.vehicle_id, "
+                "pd.route_id, pd.material_id, pd.transfer_qty, pd.created_at, "
+                "pr.status, pr.reason_json, pr.created_at AS verdict_created_at "
+                "FROM plan_definitions pd "
+                "LEFT JOIN plan_results pr "
+                "ON pr.run_id = pd.run_id AND pr.plan_id = pd.plan_id "
+                "WHERE pd.run_id=? ORDER BY pd.plan_id",
+                (run_id,),
+            ).fetchall()
+        finally:
+            close_conn(conn)
+    except sqlite3.Error as exc:
+        return False, 500, "db error: %s" % exc, None
+
+    plans = []
+    for r in rows:
+        reason = r["reason_json"]
+        if reason:
+            try:
+                reason = json.loads(reason)
+            except json.JSONDecodeError:
+                pass  # 防御脏数据: 保留原文
+        plans.append({
+            "plan_id": r["plan_id"],
+            "plan_name": r["plan_name"],
+            "reserve_id": r["reserve_id"],
+            "vehicle_id": r["vehicle_id"],
+            "route_id": r["route_id"],
+            "material_id": r["material_id"],
+            "transfer_qty": r["transfer_qty"],
+            "status": r["status"],
+            "reason_json": reason,
+            "created_at": r["created_at"],
+            "verdict_created_at": r["verdict_created_at"],
+        })
+    return True, 200, "ok", {
+        "run_id": run_id,
+        "run_status": row["run_status"],
+        "plan_count": len(plans),
+        "plans": plans,
+    }
+
+
 if __name__ == "__main__":
     import sys
 

@@ -5,7 +5,9 @@ from pydantic import BaseModel
 
 from constants import RUN_TYPE
 from db import close_conn, get_conn
+from gap_check import get_blockers
 from mqtt_client import ws_connections, bind_loop, current_snapshot
+from plan_store import get_plans_with_results
 from run_store_v2 import create_run, get_run, list_runs
 from task_execute import run_execute_all
 from t1_check import get_task_result
@@ -266,6 +268,34 @@ def api_get_task_result(run_id: str, task_id: str = "T1"):
     - run_id 不存在 → 404; 板块3 只支持 task_id=T1 (其余任务板块4 实现)
     """
     ok, http_status, msg, data = get_task_result(run_id, task_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+# ============================================================
+# 阶段04板块4: Blockers 缺口查询 + 候选方案评估查询 (只读接口)
+# - blockers 来自板块1 gap_check 落库 (含 gap 数值与缺口描述文本)
+# - plans 合并板块2 plan_definitions 基础信息 + 板块3 plan_results
+#   判定结果; 未判定方案 status 为 null
+# ============================================================
+
+@app.get("/api/runs/{run_id}/blockers")
+def api_get_blockers(run_id: str):
+    """当前 run 全部 blocker 缺口记录: gap 数值 + 缺口描述文本
+    (reason_json.summary)。run 不存在 → 404。"""
+    ok, http_status, msg, data = get_blockers(run_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+@app.get("/api/runs/{run_id}/plans")
+def api_get_plans(run_id: str):
+    """合并返回候选方案基础信息 + 可行性判定结果: 每条方案携带方案标识
+    (plan_name)、status (executable / non_executable, 未判定 null)、
+    结构化 reason_json。run 不存在 → 404。"""
+    ok, http_status, msg, data = get_plans_with_results(run_id)
     if not ok:
         raise HTTPException(status_code=http_status, detail=msg)
     return data
