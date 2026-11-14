@@ -1,14 +1,21 @@
 import asyncio
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import json
+import sqlite3
+import uuid
+from datetime import datetime
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from constants import RUN_TYPE
-from db import close_conn, get_conn
+from db import close_conn, get_conn, next_run_id
 from gap_check import get_blockers
 from mqtt_client import ws_connections, bind_loop, current_snapshot
 from plan_store import get_plans_with_results
-from run_store_v2 import create_run, get_run, list_runs
+from review_store import create_review, get_pending_reviews
+from run_store_v2 import _capture_snapshot, create_run, get_run, list_runs
 from task_execute import run_execute_all
 from t1_check import get_task_result
 
@@ -296,6 +303,281 @@ def api_get_plans(run_id: str):
     (plan_name)、status (executable / non_executable, 未判定 null)、
     结构化 reason_json。run 不存在 → 404。"""
     ok, http_status, msg, data = get_plans_with_results(run_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+# ============================================================
+# 阶段05板块2: 复核业务 REST 接口 (新增, 原有接口全部保留不修改)
+# - POST /api/reviews                     创建待复核 review 请求
+# - GET  /api/reviews/pending             全部 pending 复核单 (小程序拉取)
+# - POST /api/reviews/{review_id}/receipt 签收提交 (核心接口)
+# ============================================================
+
+class ReviewCreate(BaseModel):
+    """POST /api/reviews 入参。"""
+    dispatch_id: str
+    service_id: str
+    material_id: str
+    trigger_run_id: str
+
+
+class ReviewReceiptSubmit(BaseModel):
+    """POST /api/reviews/{review_id}/receipt 入参。"""
+    receipt_id: str
+    dispatch_id: str
+    service_id: str
+    material_id: str
+    received_quantity: int
+    observed_at: str
+    source_type: str = "API"
+    note: Optional[str] = None
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _submit_review_receipt(review_id: str, body: ReviewReceiptSubmit) -> tuple:
+    """签收提交完整动作编排 (供 POST /api/reviews/{review_id}/receipt)。
+
+    按文档规则顺序:
+      ① receipt_id 全局唯一: 已存在 → 409 (禁止重复累加, 幂等)
+      ② review 必须处于 pending: 不存在 → 404; 已 completed → 409
+      ③ dispatch_id/service_id/material_id 必须与 review 记录一致 → 400
+      ④ 签收成功完整动作 (同一事务, 原子):
+         - review 标记 completed (回填 completed_at)
+         - 签收记录写入 receipt_records_v2
+         - note (可选) 写入 evidence_v2 证据层
+         - 基于 trigger_run 快照新建一条全新 reality run
+           (parent_run_id=trigger_run_id; 原始 trigger_run 只读, 绝不修改;
+           新 run 快照复用 run_store_v2._capture_snapshot 口径在同一事务
+           抓取, 天然包含刚写入的签收记录)
+         - 事务提交后对新 run 执行 run_execute_all (完整 T1~T5 验算)
+    返回 (ok, http_status, msg, data)。
+    """
+    # ---- 400: 入参合法性 ----
+    for name, value in (("receipt_id", body.receipt_id),
+                        ("dispatch_id", body.dispatch_id),
+                        ("service_id", body.service_id),
+                        ("material_id", body.material_id),
+                        ("observed_at", body.observed_at)):
+        if value is None or not str(value).strip():
+            return False, 400, "%s required" % name, None
+    if (isinstance(body.received_quantity, bool)
+            or not isinstance(body.received_quantity, int)
+            or body.received_quantity < 0):
+        return False, 400, "received_quantity must be a non-negative integer", None
+    if body.source_type is None or not str(body.source_type).strip():
+        return False, 400, "source_type required", None
+    if body.note is not None and (not isinstance(body.note, str)
+                                  or len(body.note) > 500):
+        return False, 400, "note must be a string with at most 500 chars", None
+
+    receipt_id = str(body.receipt_id).strip()
+    dispatch_id = str(body.dispatch_id).strip()
+    service_id = str(body.service_id).strip()
+    material_id = str(body.material_id).strip()
+    observed_at = str(body.observed_at).strip()
+    source_type = str(body.source_type).strip()
+    note = body.note.strip() if body.note and body.note.strip() else None
+    review_id = str(review_id).strip()
+
+    # ---- ① 快速幂等预检 (事务内再查兜底并发) ----
+    conn = get_conn()
+    try:
+        dup = conn.execute(
+            "SELECT 1 FROM receipt_records_v2 WHERE receipt_id=?",
+            (receipt_id,),
+        ).fetchone()
+    finally:
+        close_conn(conn)
+    if dup is not None:
+        return False, 409, (
+            "receipt %s already exists (幂等, 禁止重复累加签收数量)"
+            % receipt_id), None
+
+    # ---- ②③④ 主事务 (run_id 撞主键时整体重试, 最多 3 次) ----
+    last_run_id_err = None
+    for _ in range(3):
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM review_requests WHERE review_id=?",
+                (review_id,),
+            ).fetchone()
+            if row is None:
+                return False, 404, "review %s not found" % review_id, None
+            # ② pending 状态闸门
+            if row["status"] != "pending":
+                return False, 409, (
+                    "review %s is %s, receipt submit rejected"
+                    % (review_id, row["status"])), None
+            # ③ 三元组一致性
+            if (row["dispatch_id"] != dispatch_id
+                    or row["service_id"] != service_id
+                    or row["material_id"] != material_id):
+                return False, 400, (
+                    "request (dispatch_id=%s, service_id=%s, material_id=%s) "
+                    "does not match review %s"
+                    % (dispatch_id, service_id, material_id, review_id)), None
+            # ① 并发兜底: 同 receipt_id 已存在 → 409
+            if conn.execute(
+                "SELECT 1 FROM receipt_records_v2 WHERE receipt_id=?",
+                (receipt_id,),
+            ).fetchone() is not None:
+                return False, 409, (
+                    "receipt %s already exists (幂等, 禁止重复累加签收数量)"
+                    % receipt_id), None
+
+            # ---- ④ 完整动作 (同一事务) ----
+            conn.execute(
+                "INSERT INTO receipt_records_v2 "
+                "(receipt_id, dispatch_id, service_id, material_id, "
+                "received_quantity, observed_at, source_type) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (receipt_id, dispatch_id, service_id, material_id,
+                 body.received_quantity, observed_at, source_type),
+            )
+            completed_at = _now()
+            cur = conn.execute(
+                "UPDATE review_requests SET status='completed', completed_at=? "
+                "WHERE review_id=? AND status='pending'",
+                (completed_at, review_id),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return False, 409, (
+                    "review %s is no longer pending, receipt submit rejected"
+                    % review_id), None
+            evidence_id = None
+            if note is not None:
+                evidence_id = uuid.uuid4().hex
+                conn.execute(
+                    "INSERT INTO evidence_v2 "
+                    "(evidence_id, evidence_type, source_id, status, "
+                    "value_json, observed_at) VALUES (?,?,?,?,?,?)",
+                    (evidence_id, "receipt", receipt_id, "ok",
+                     json.dumps({"note": note}, ensure_ascii=False),
+                     observed_at),
+                )
+            # 原始 trigger_run 只读: 仅读取 scenario_id, 绝不修改
+            trun = conn.execute(
+                "SELECT scenario_id FROM runs WHERE run_id=?",
+                (row["trigger_run_id"],),
+            ).fetchone()
+            if trun is None:
+                conn.rollback()
+                return False, 500, (
+                    "review %s references missing run %s"
+                    % (review_id, row["trigger_run_id"])), None
+            # 新建全新 reality run: 快照同一事务抓取, 含刚写入的签收记录
+            new_run_id = next_run_id(conn)
+            snapshot = _capture_snapshot(conn)
+            conn.execute(
+                "INSERT INTO runs "
+                "(run_id, scenario_id, run_type, parent_run_id, run_status, "
+                "input_snapshot_json, assumptions_json) VALUES (?,?,?,?,?,?,?)",
+                (new_run_id, trun["scenario_id"], RUN_TYPE,
+                 row["trigger_run_id"], "pending",
+                 json.dumps(snapshot, ensure_ascii=False), "{}"),
+            )
+            conn.commit()
+            break
+        except sqlite3.IntegrityError as exc:
+            last_run_id_err = exc
+            conn.rollback()
+            # receipt UNIQUE 并发冲突 → 409; 否则 (run_id 撞主键) → 重试
+            c2 = get_conn()
+            try:
+                exists = c2.execute(
+                    "SELECT 1 FROM receipt_records_v2 WHERE receipt_id=?",
+                    (receipt_id,),
+                ).fetchone()
+            finally:
+                close_conn(c2)
+            if exists is not None:
+                return False, 409, (
+                    "receipt %s already exists (并发幂等, 禁止重复累加签收数量)"
+                    % receipt_id), None
+        except sqlite3.Error as exc:
+            conn.rollback()
+            return False, 500, "db error: %s" % exc, None
+        finally:
+            close_conn(conn)
+    else:
+        return False, 500, (
+            "new run creation failed after 3 retries: %s" % last_run_id_err), None
+
+    # ---- 对新 run 自动执行完整 T1~T5 验算 ----
+    ok_e, http_status_e, msg_e, data_e = run_execute_all(new_run_id)
+    if not ok_e:
+        return False, 500, (
+            "receipt submitted and review completed, but T1~T5 execute "
+            "failed on new run %s: %s" % (new_run_id, msg_e)), {
+            "receipt_id": receipt_id,
+            "review_id": review_id,
+            "review_status": "completed",
+            "note_evidence_id": evidence_id,
+            "new_run_id": new_run_id,
+        }
+    return True, 200, (
+        "receipt submitted, review completed, new run %s executed"
+        % new_run_id), {
+        "receipt_id": receipt_id,
+        "review_id": review_id,
+        "review_status": "completed",
+        "note_evidence_id": evidence_id,
+        "new_run_id": new_run_id,
+        "execute": data_e,
+    }
+
+
+@app.post("/api/reviews")
+def api_create_review(body: ReviewCreate, response: Response):
+    """创建待复核 review 请求 (阶段05板块2)。
+
+    - 入参: dispatch_id / service_id / material_id / trigger_run_id
+    - 返回: review_id; 同三元组已存在 pending 单时幂等返回原 review_id
+    - 必填缺失 → 400; trigger_run_id 不存在 → 404
+    """
+    ok, http_status, msg, data = create_review(
+        body.dispatch_id, body.trigger_run_id,
+        body.service_id, body.material_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    response.status_code = 201 if data["created"] else 200
+    return {"review_id": data["review_id"], "created": data["created"]}
+
+
+@app.get("/api/reviews/pending")
+def api_pending_reviews():
+    """全部 pending 待复核列表 (供小程序拉取, 阶段05板块2)。
+
+    返回字段严格对齐文档: review_id / service_id / material_id /
+    dispatch_id / trigger_run_id / created_at。
+    """
+    ok, http_status, msg, data = get_pending_reviews()
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    fields = ("review_id", "service_id", "material_id",
+              "dispatch_id", "trigger_run_id", "created_at")
+    reviews = [{k: r[k] for k in fields} for r in data["reviews"]]
+    return {"review_count": len(reviews), "reviews": reviews}
+
+
+@app.post("/api/reviews/{review_id}/receipt")
+def api_submit_review_receipt(review_id: str, body: ReviewReceiptSubmit):
+    """签收提交 (阶段05板块2 核心接口)。
+
+    - receipt_id 重复 → 409 (幂等, 禁止重复累加签收数量)
+    - review 不存在 → 404; 已 completed → 409 (拒绝签收)
+    - 三元组与 review 记录不一致 → 400
+    - 成功: review → completed + 签收落 receipt_records_v2 + 新建
+      reality run (原 trigger_run 只读) + 自动执行完整 T1~T5 验算。
+    """
+    ok, http_status, msg, data = _submit_review_receipt(review_id, body)
     if not ok:
         raise HTTPException(status_code=http_status, detail=msg)
     return data
