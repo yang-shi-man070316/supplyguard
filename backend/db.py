@@ -1,19 +1,43 @@
 """B-B03 数据库初始化与基础连接工具.
 
-只负责建表和连接管理, 不包含任何业务 CRUD / 插入逻辑。
+职责:
+    - 建表 (幂等, IF NOT EXISTS): 阶段02观测/证据表 + 阶段03板块1 4张核心表
+    - 阶段03文档重建迁移: 旧版(字段不符文档)同名表自动冻结为 *_legacy, 原数据保留
+    - 静态种子: T1~T5 任务定义落库 task_definitions (幂等, 只插不覆盖)
+    - run_id 自增规则工具: next_run_id() → BB03-RUN-001 / BB03-RUN-002 / ...
 
-被 main.py import 时自动执行建表 (main.py 仅新增一行 import db),
-启动 uvicorn 即生成数据库文件 bb03.db
-(阶段02 7张表 + 板块4 dispatch/receipt 2张表 + 阶段03板块1 4张表
-+ 阶段04板块3、板块4各1张表)。
+不包含任何业务 CRUD / T1~T5 校验计算逻辑 (阶段03板块1 禁止实现)。
+
+被 main.py import 时自动执行建表+迁移+种子, 启动 uvicorn 即完成数据层落地。
+
+阶段03板块1 数据层约束 (本文件强制):
+    - task_definitions 只存稳定业务结构 (4个静态字段, 种子只来自
+      constants.TASK_DEFINITIONS), 禁止写入实时库存/需求状态
+    - runs.run_status=completed 之后快照列禁止修改、禁止覆盖
+      (trg_runs_completed_snapshot_immutable 触发器强制)
 """
 
 import sqlite3
 from pathlib import Path
 
+from constants import (
+    DEPENDENCY_STATUS,
+    RUN_ID_PREFIX,
+    RUN_STATUS,
+    RUN_TYPE,
+    TASK_DEFINITIONS,
+    TASK_RESULT_STATUS,
+    format_run_id,
+)
+
 DB_PATH = Path(__file__).parent / "bb03.db"
 
-_SCHEMA = """
+# 建表 CHECK 约束直接由 constants 常量生成, 保证「常量枚举 = 表约束」单一来源
+_DEPS_STATUS_SQL = ", ".join("'%s'" % s for s in DEPENDENCY_STATUS)
+_TASK_STATUS_SQL = ", ".join("'%s'" % s for s in TASK_RESULT_STATUS)
+_RUN_STATUS_SQL = ", ".join("'%s'" % s for s in RUN_STATUS)
+
+_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS stock_observations (
     stock_id INTEGER PRIMARY KEY AUTOINCREMENT,
     reserve_id TEXT NOT NULL,
@@ -94,55 +118,67 @@ CREATE TABLE IF NOT EXISTS receipt_records_v2 (
     source_type TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
-CREATE TABLE IF NOT EXISTS runs (
-    run_id TEXT PRIMARY KEY,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','completed')),
-    payload TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-    updated_at TEXT
-);
 
 -- ============================================================
--- 阶段03 板块1: 任务/依赖检查/任务结果存储 (仅建表, 无业务逻辑)
--- 说明: runs 表阶段02已存在(旧规格 status pending/completed),
--- 本板块按约定不重建; 阶段03新 runs 规格(run_status
--- running/completed/error 等)的合并方案留待后续板块。
--- 规则备忘: run_status=completed 的 run 后续业务层不允许修改。
+-- 阶段03 板块1 (按阶段03文档重建): 4张核心表, 字段严格对齐文档
+-- task_definitions / runs / dependency_checks / task_results
+-- 旧版同名表(字段不符文档)在 init_db 时已自动冻结为 *_legacy
+-- (见 _freeze_legacy_tables, 原数据保留)。dependency_definitions
+-- 旧表同样冻结, 新版依赖描述随检查行落 dependency_checks(dep_desc)。
 -- ============================================================
 CREATE TABLE IF NOT EXISTS task_definitions (
-    task_id TEXT PRIMARY KEY,
-    task_name TEXT NOT NULL,
-    task_desc TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    task_id TEXT PRIMARY KEY,          -- 任务编号 T1~T5
+    task_name TEXT NOT NULL,           -- 任务名称
+    description TEXT,                  -- 任务描述 (判定目标)
+    rule_notes TEXT                    -- 判定规则备注 (依赖规则说明)
 );
-CREATE TABLE IF NOT EXISTS dependency_definitions (
-    dep_id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL,
-    dep_name TEXT NOT NULL,
-    dep_desc TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,           -- BB03-RUN-001/002... 自增 (next_run_id)
+    scenario_id TEXT NOT NULL,         -- 场景编号 (如 S1)
+    run_type TEXT NOT NULL DEFAULT '{RUN_TYPE}',  -- 常量 RUN_TYPE = "reality"
+    parent_run_id TEXT,                -- 父 run; 顶层 run 为 NULL
+    run_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(run_status IN ({_RUN_STATUS_SQL})),
+    input_snapshot_json TEXT,          -- 输入快照; completed 后禁止修改
+    assumptions_json TEXT,             -- 假设快照; completed 后禁止修改
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    completed_at TEXT                  -- 完成时间; pending 期间为 NULL
 );
 CREATE TABLE IF NOT EXISTS dependency_checks (
-    check_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id TEXT NOT NULL,
-    dep_id TEXT NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('satisfied','unsatisfied','unknown')),
-    check_msg TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,              -- 关联 runs.run_id
+    task_id TEXT NOT NULL,             -- 关联任务 T1~T5
+    dep_key TEXT NOT NULL,             -- 依赖键 (如 T1-D1)
+    dep_desc TEXT,                     -- 依赖描述
+    status TEXT NOT NULL CHECK(status IN ({_DEPS_STATUS_SQL})),
+    evidence TEXT,                     -- 判断依据/证据摘要
+    reason TEXT                        -- 判定理由 (不满足原因等)
 );
 CREATE TABLE IF NOT EXISTS task_results (
-    result_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('established','blocked','pending_verification','unknown')),
-    result_msg TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,              -- 关联 runs.run_id
+    task_id TEXT NOT NULL,             -- 关联任务 T1~T5
+    result_status TEXT NOT NULL CHECK(result_status IN ({_TASK_STATUS_SQL})),
+    summary_reason TEXT                -- 结果摘要/理由
 );
+CREATE INDEX IF NOT EXISTS idx_dependency_checks_run ON dependency_checks(run_id);
+CREATE INDEX IF NOT EXISTS idx_task_results_run ON task_results(run_id);
+
+-- 数据层强制: run completed 之后, 输入快照/假设快照禁止修改、禁止覆盖
+CREATE TRIGGER IF NOT EXISTS trg_runs_completed_snapshot_immutable
+BEFORE UPDATE ON runs
+WHEN OLD.run_status = 'completed'
+ AND (NEW.input_snapshot_json IS NOT OLD.input_snapshot_json
+   OR NEW.assumptions_json IS NOT OLD.assumptions_json)
+BEGIN
+    SELECT RAISE(ABORT, 'runs: completed run snapshot columns are immutable');
+END;
 
 -- ============================================================
 -- 阶段04 板块3: 可复用 what-if 假设方案存储
 -- 只存用户填写的假设配置 (hypothesis_list), 不存 T1~T5 推演结果;
 -- 推演每次实时计算 (板块2 run_whatif_once)。同一 run_id 下 name 唯一。
+-- (阶段04 按文档重建前的旧表, 保留不动, 由后续板块处理)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS hypothesis_scenario (
     scenario_id TEXT PRIMARY KEY,
@@ -155,10 +191,7 @@ CREATE TABLE IF NOT EXISTS hypothesis_scenario (
 );
 
 -- ============================================================
--- 阶段04 板块4: what-if 推演快照归档
--- 只归档查阅: 保存推演当时的 hypothesis_list + result_json (与方案解耦,
--- scenario_id 仅记录来源方案, 可为空)。后续推演依然实时计算, 绝不把
--- 快照 result_json 当输入。同 run_id 下 name 唯一。
+-- 阶段04 板块4: what-if 推演快照归档 (旧表, 保留不动, 由后续板块处理)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS hypothesis_result_snapshot (
     snapshot_id TEXT PRIMARY KEY,
@@ -191,6 +224,17 @@ CREATE TABLE IF NOT EXISTS evidence_v2 (
 );
 """
 
+# 阶段03文档重建: 旧版(第一次尝试, 字段不符文档)表 → 冻结名。
+# marker 为「新规格特有列」: 表存在但缺该列 → 判定旧版, 重命名冻结;
+# marker 为 None 的表新版已取消 (dependency_definitions), 存在即冻结。
+_LEGACY_RENAMES = (
+    ("task_definitions", "task_definitions_legacy", "rule_notes"),
+    ("dependency_definitions", "dependency_definitions_legacy", None),
+    ("dependency_checks", "dependency_checks_legacy", "evidence"),
+    ("task_results", "task_results_legacy", "summary_reason"),
+    ("runs", "runs_legacy", "run_status"),
+)
+
 
 def get_conn() -> sqlite3.Connection:
     """获取数据库连接。row_factory=Row, 便于后续按列名取值。"""
@@ -205,11 +249,76 @@ def close_conn(conn: sqlite3.Connection):
         conn.close()
 
 
+def _freeze_legacy_tables(conn):
+    """旧版同名表一次性冻结为 *_legacy (幂等, 原数据原样保留)。
+
+    只处理「表存在且仍是旧字段结构」的情况; 已冻结过(旧名消失)或
+    已是新规格(含 marker 列)的库直接跳过。冻结后由 _SCHEMA 重建新表。
+    重复启动不会二次重命名、不会覆盖 *_legacy 已有数据。
+    """
+    for name, legacy_name, marker in _LEGACY_RENAMES:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,),
+        ).fetchone()
+        if row is None:
+            continue  # 表不存在 (全新库, 或已冻结过)
+        if marker is not None:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(%s)" % name)]
+            if marker in cols:
+                continue  # 已是新规格表
+        try:
+            conn.execute("ALTER TABLE %s RENAME TO %s" % (name, legacy_name))
+        except sqlite3.OperationalError as exc:
+            raise RuntimeError(
+                "freeze legacy table %s -> %s failed: %s "
+                "(同名 *_legacy 已存在, 请人工确认后处理)" % (name, legacy_name, exc)
+            ) from exc
+
+
+def _seed_task_definitions(conn):
+    """T1~T5 静态任务定义落库 (INSERT OR IGNORE, 幂等, 不覆盖已有行)。
+
+    task_definitions 只存稳定业务结构 (任务名/描述/判定规则), 种子只来自
+    constants.TASK_DEFINITIONS; 禁止写入实时库存/需求/运输等运行时状态。
+    """
+    conn.executemany(
+        "INSERT OR IGNORE INTO task_definitions "
+        "(task_id, task_name, description, rule_notes) VALUES (?,?,?,?)",
+        [(t["task_id"], t["task_name"], t["description"], t["rule_notes"])
+         for t in TASK_DEFINITIONS],
+    )
+
+
+def next_run_id(conn=None) -> str:
+    """按 BB03-RUN-001/002... 自增规则计算下一个 run_id (只读, 不占用序列)。
+
+    序列 = runs 表当前最大序号 + 1 (空表 → BB03-RUN-001)。
+    并发写入时的唯一性由后续板块写入层以主键冲突兜底, 本函数只负责生成。
+    """
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT MAX(CAST(SUBSTR(run_id, ?) AS INTEGER)) FROM runs "
+            "WHERE run_id LIKE ?",
+            (len(RUN_ID_PREFIX) + 1, RUN_ID_PREFIX + "%"),
+        ).fetchone()
+        seq = (row[0] or 0) + 1
+        return format_run_id(seq)
+    finally:
+        if own:
+            close_conn(conn)
+
+
 def init_db():
-    """建表 (IF NOT EXISTS, 幂等, 可重复调用)。"""
+    """建表 + 旧表冻结迁移 + T1~T5 静态种子 (幂等, 可重复调用)。"""
     conn = get_conn()
     try:
+        _freeze_legacy_tables(conn)
         conn.executescript(_SCHEMA)
+        _seed_task_definitions(conn)
         conn.commit()
     finally:
         close_conn(conn)

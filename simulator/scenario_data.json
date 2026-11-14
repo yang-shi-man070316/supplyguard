@@ -11,7 +11,7 @@
     {"service_id": "P1", "material_id": "W", "required_quantity": 4},
     {"service_id": "P1", "material_id": "L", "required_quantity": 1},
     {"service_id": "P1", "material_id": "R", "required_quantity": 2},
-    {"service_id": "P2", "material_id": "W", "required_quantity": 8},
+    {"service_id": "P2", "material_id": "W", "required_quantity": 5},
     {"service_id": "P2", "material_id": "L", "required_quantity": 5},
     {"service_id": "P2", "material_id": "R", "required_quantity": 3},
     {"service_id": "P3", "material_id": "W", "required_quantity": 6},
