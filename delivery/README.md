@@ -1,20 +1,16 @@
 # SupplyGuard 应急物资保障系统
 
-> 校园极端天气演练的「保供值班员」：不是告诉你仓库里有多少箱水，是告诉你**每个关键服务点的保障任务到底成不成立**。
->
-> 核心语义：**签收取证失败 ≠ 未送达** —— 投送单派出去、现场却没能留下签收凭证，系统判「待验证」，不武断算缺口。
-
 ## 1. 项目介绍
 
-| 能力 | 说明 |
-|---|---|
-| T1~T5 五级保障判定 | 需求保障 / 运输可达 / 响应时效 / 签收闭环 / 证据一致性，逐任务独立落库可追溯 |
-| 缺口识别与候选方案 | 双证据齐全且 gap>0 才生成缺口（blocker）；固定三套调拨方案（PLAN-A/B/C）可行性判定 |
-| 接收复核闭环 | 小程序待复核单 → 签收提交 → 幂等回执 → 自动生成新 run 复测 |
-| reality / what-if 双轨 | 假设推演独立落库，父基线六表 sha256 指纹防污染校验 |
-| 证据体系 | evidence_v2 统一证据层：签收/调配直连证据 + 天气/RAG/ML/工具轨迹/LLM 解释辅助证据，异常一律降级不阻断判定 |
-| 场景冻结与重放 | `scenarios/` S1~S5 冻结基线，现场变量调整统一走 `input_overrides` / `assumptions`，绝不改场景文件 |
-| 前端工作台 | 四视图（任务总览/缺口依赖/证据运行/方案对比）+ Three.js 拓扑关系视图 + run trace 一路下钻 |
+| 能力                   | 说明                                                                                                      |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| T1~T5 五级保障判定     | 需求保障 / 运输可达 / 响应时效 / 签收闭环 / 证据一致性，逐任务独立落库可追溯                              |
+| 缺口识别与候选方案     | 双证据齐全且 gap>0 才生成缺口（blocker）；固定三套调拨方案（PLAN-A/B/C）可行性判定                        |
+| 接收复核闭环           | 小程序待复核单 → 签收提交 → 幂等回执 → 自动生成新 run 复测                                                |
+| reality / what-if 双轨 | 假设推演独立落库，父基线六表 sha256 指纹防污染校验                                                        |
+| 证据体系               | evidence_v2 统一证据层：签收/调配直连证据 + 天气/RAG/ML/工具轨迹/LLM 解释辅助证据，异常一律降级不阻断判定 |
+| 场景冻结与重放         | `scenarios/` S1~S5 冻结基线，现场变量调整统一走 `input_overrides` / `assumptions`，绝不改场景文件         |
+| 前端工作台             | 四视图（任务总览/缺口依赖/证据运行/方案对比）+ Three.js 拓扑关系视图 + run trace 一路下钻                 |
 
 **教学场景规模（固定）：** 储备点 R1/R2 · 服务点 P1/P2/P3 · 物资 W(水)/L(照明)/R(急救包) · 车辆 V1/V2。
 
@@ -71,14 +67,14 @@ python scenarios/load_scenario.py S5 --dry-run
 
 ### S1~S5 演示指引
 
-| 场景 | 演示内容 | 命令 | 预期（console 查看） |
-|---|---|---|---|
-| **S1** | 标准基线 | `python scenarios/load_scenario.py S1 --full` | T1 blocked（8/9 需求缺签收），T2~T5 established |
-| **S2** | 缺口识别 | `python scenarios/load_scenario.py S2 --full` | blockers：P1/W gap=2、P2/L gap=3；无签收的组合不武断算缺口 |
-| **S3** | 候选方案判定 | `python scenarios/load_scenario.py S3 --full` | T1 blocked（签收3<需求7）；PLAN-A 可执行，PLAN-B（V2 FAULT）/PLAN-C（路线超时）不可执行 |
-| **S4** | what-if 推演 | `python scenarios/load_scenario.py S4 --whatif whatif-A --parent <S3基线run>` | 推演A：V2修复 → PLAN-B 转可执行；推演B：时限放宽 → PLAN-C 可执行；推演C：库存削减 → 全部不可执行；父基线指纹无污染 |
-| **S5** | 取证失败降级 | `python scenarios/load_scenario.py S5 --full` | T1 unknown、T4 pending_verification、T5 established(degraded)；无 blocker；无 NOT_RECEIVED |
-| **S5 回填** | 证据回填复测 | `python scenarios/load_scenario.py S5 --variant refill --full` | 补合法签收 8 件后 T1 恢复 established；旧 run 判定不动 |
+| 场景        | 演示内容     | 命令                                                                          | 预期（console 查看）                                                                                               |
+| ----------- | ------------ | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **S1**      | 标准基线     | `python scenarios/load_scenario.py S1 --full`                                 | T1 blocked（8/9 需求缺签收），T2~T5 established                                                                    |
+| **S2**      | 缺口识别     | `python scenarios/load_scenario.py S2 --full`                                 | blockers：P1/W gap=2、P2/L gap=3；无签收的组合不武断算缺口                                                         |
+| **S3**      | 候选方案判定 | `python scenarios/load_scenario.py S3 --full`                                 | T1 blocked（签收3<需求7）；PLAN-A 可执行，PLAN-B（V2 FAULT）/PLAN-C（路线超时）不可执行                            |
+| **S4**      | what-if 推演 | `python scenarios/load_scenario.py S4 --whatif whatif-A --parent <S3基线run>` | 推演A：V2修复 → PLAN-B 转可执行；推演B：时限放宽 → PLAN-C 可执行；推演C：库存削减 → 全部不可执行；父基线指纹无污染 |
+| **S5**      | 取证失败降级 | `python scenarios/load_scenario.py S5 --full`                                 | T1 unknown、T4 pending_verification、T5 established(degraded)；无 blocker；无 NOT_RECEIVED                         |
+| **S5 回填** | 证据回填复测 | `python scenarios/load_scenario.py S5 --variant refill --full`                | 补合法签收 8 件后 T1 恢复 established；旧 run 判定不动                                                             |
 
 演示时在 console 顶栏选择对应 run：总览页 KPI 与 T1→T5 通关流程条、缺口矩阵、证据链、方案对比、拓扑视图（储备点/服务点/投送连线状态色）全部联动。
 
@@ -115,6 +111,9 @@ python regression_suite.py --report-file reg_report.json   # 输出 JSON 报告
 # 板块一回归：场景冻结 + run_trace（55 用例，含阶段07 回归）
 python board1_scenario_test.py
 # 板块一前端回归：四视图 + 拓扑 + 下钻（Playwright，需先启动后端）
+# 前置: 干净库 (backend/bb03.db 无任何 run)。前端用例硬编码固定 run 序列
+# (RUN-007 pending / RUN-009~010 / RUN-011 / RUN-016), 需先生成该序列:
+python prepare_frontend_test_data.py http://127.0.0.1:8000   # 干净库上生成 RUN-001~016
 python board1_frontend_test.py http://127.0.0.1:8000
 
 # 阶段07 历史用例（独立回归）
@@ -125,6 +124,7 @@ python s5_degrade_test.py        # S5 取证失败降级 + 证据回填复测
 回归案例清单与预期输出见 [REGRESSION_CASES.md](REGRESSION_CASES.md)；板块二回归报告见 [PHASE08_BOARD2_REPORT.md](PHASE08_BOARD2_REPORT.md)。
 
 **标准演示脚本（固定可复现流程，含每步 run_id / 预期现象 / 视图变化）：**
+
 - 成功演示（S1→S2→S3→投送签收→T1 成立）：[demo/demo_success.md](demo/demo_success.md)
 - 失败演示（S5 取证失败→复核→回填→T1 恢复）：[demo/demo_failure.md](demo/demo_failure.md)
 - 阶段08 终验核对报告：[demo/PHASE08_FINAL_VERIFICATION.md](demo/PHASE08_FINAL_VERIFICATION.md)
@@ -165,13 +165,13 @@ supplyguard/
 
 `.env.example` 为模板（不含真实密钥）。当前代码读取情况：
 
-| 变量 | 是否被代码读取 | 默认值 / 说明 |
-|---|---|---|
+| 变量                                                                        | 是否被代码读取                      | 默认值 / 说明                                                       |
+| --------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------- |
 | `SUPPLYGUARD_LLM_URL` / `SUPPLYGUARD_LLM_API_KEY` / `SUPPLYGUARD_LLM_MODEL` | ✅ 读取（analysis/llm_explainer.py） | 远程 LLM 为可选：未配置走本地模板解释；配置错误自动降级 unavailable |
-| `SUPPLYGUARD_LLM_DISABLED` | ✅ 读取 | `1` 强制禁用 LLM（故障注入/回归测试用），降级 status=unavailable |
-| `SUPPLYGUARD_MQTT_BROKER` / `SUPPLYGUARD_MQTT_PORT` | ❌ 模板（当前代码常量） | 当前 mqtt_client.py 使用默认 `127.0.0.1:1883` |
-| `SUPPLYGUARD_API_HOST` / `SUPPLYGUARD_API_PORT` | ❌ 模板 | uvicorn 启动参数控制（如 `--port 8000`） |
-| `SUPPLYGUARD_DB_PATH` | ❌ 模板（当前代码常量） | 当前默认 `backend/bb03.db`；回归测试用代码级重定向 |
+| `SUPPLYGUARD_LLM_DISABLED`                                                  | ✅ 读取                              | `1` 强制禁用 LLM（故障注入/回归测试用），降级 status=unavailable    |
+| `SUPPLYGUARD_MQTT_BROKER` / `SUPPLYGUARD_MQTT_PORT`                         | ❌ 当前代码常量                      | 当前 mqtt_client.py 使用默认 `127.0.0.1:1883`                       |
+| `SUPPLYGUARD_API_HOST` / `SUPPLYGUARD_API_PORT`                             | ❌ 模板                              | uvicorn 启动参数控制（如 `--port 8000`）                            |
+| `SUPPLYGUARD_DB_PATH`                                                       | ❌ 当前代码常量                      | 当前默认 `backend/bb03.db`；回归测试用代码级重定向                  |
 
 使用示例（PowerShell）：
 

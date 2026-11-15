@@ -1,4 +1,4 @@
-# 阶段08 板块二 回归报告
+# 回归报告
 
 > 回归案例库 + 失败回归 + 工程文档补齐 · 报告日期 2026-11-15
 > 回归脚本：`backend/regression_suite.py` / `backend/e2e_boot_test.py`
@@ -6,14 +6,14 @@
 
 ## 交付产物清单
 
-| 产物 | 位置 | 说明 |
-|---|---|---|
-| 正向+失败回归套件 | `backend/regression_suite.py` | 正向 5 案例（固定 run_id + 预期输出比对）+ 失败 4 类（异常注入与降级验证），支持 `--report-file` JSON 报告 |
-| 清空环境端到端自测 | `backend/e2e_boot_test.py` | 完整代码副本（无任何 .db）→ uvicorn 从零拉起 → 真实 CLI 加载场景 → REST 验证 |
-| 工程 README | `delivery/README.md` | 项目介绍 / 依赖 / clone→install→env→start / 场景演示流程 / S1~S5 指引 / 回归命令 / Modify→Run→Verify / 环境变量说明 |
-| 环境变量模板 | `delivery/.env.example` | 模板变量（LLM 实际生效项 + MQTT/端口/DB 模板项），不含真实密钥 |
-| 回归用例清单 | `delivery/REGRESSION_CASES.md` | 案例表 + 注入方式 + 预期降级行为 + 与历史回归关系 |
-| 本报告 | `delivery/PHASE08_BOARD2_REPORT.md` | 验收对照与实测结果 |
+| 产物               | 位置                                | 说明                                                                                                                |
+| ------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| 正向+失败回归套件  | `backend/regression_suite.py`       | 正向 5 案例（固定 run_id + 预期输出比对）+ 失败 4 类（异常注入与降级验证），支持 `--report-file` JSON 报告          |
+| 清空环境端到端自测 | `backend/e2e_boot_test.py`          | 完整代码副本（无任何 .db）→ uvicorn 从零拉起 → 真实 CLI 加载场景 → REST 验证                                        |
+| 工程 README        | `delivery/README.md`                | 项目介绍 / 依赖 / clone→install→env→start / 场景演示流程 / S1~S5 指引 / 回归命令 / Modify→Run→Verify / 环境变量说明 |
+| 环境变量模板       | `delivery/.env.example`             | 模板变量（LLM 实际生效项 + MQTT/端口/DB 模板项），不含真实密钥                                                      |
+| 回归用例清单       | `delivery/REGRESSION_CASES.md`      | 案例表 + 注入方式 + 预期降级行为 + 与历史回归关系                                                                   |
+| 本报告             | `delivery/PHASE08_BOARD2_REPORT.md` | 验收对照与实测结果                                                                                                  |
 
 ## 验收标准对照（全部实测通过）
 
@@ -79,21 +79,21 @@
 
 ### ✅ 验收 4：阶段 07 所有历史用例回归全部通过
 
-| 用例套件 | 结果 |
-|---|---|
+| 用例套件                                                 | 结果           |
+| -------------------------------------------------------- | -------------- |
 | `whatif_run_test.py`（S4 what-if 推演 + 六表指纹无污染） | **46/46 PASS** |
-| `s5_degrade_test.py`（S5 取证失败降级 + 证据回填复测） | **33/33 PASS** |
+| `s5_degrade_test.py`（S5 取证失败降级 + 证据回填复测）   | **33/33 PASS** |
 
 ## 回归汇总
 
-| 套件 | 用例数 | 结果 |
-|---|---|---|
-| regression_suite.py 正向案例 | 5 | 5/5 PASS |
-| regression_suite.py 失败回归 | 11 | 11/11 PASS |
-| e2e_boot_test.py 清空环境端到端 | 8 | 8/8 PASS |
-| whatif_run_test.py（阶段07） | 46 | 46/46 PASS |
-| s5_degrade_test.py（阶段07） | 33 | 33/33 PASS |
-| **合计** | **103** | **103/103 PASS** |
+| 套件                            | 用例数  | 结果             |
+| ------------------------------- | ------- | ---------------- |
+| regression_suite.py 正向案例    | 5       | 5/5 PASS         |
+| regression_suite.py 失败回归    | 11      | 11/11 PASS       |
+| e2e_boot_test.py 清空环境端到端 | 8       | 8/8 PASS         |
+| whatif_run_test.py（阶段07）    | 46      | 46/46 PASS       |
+| s5_degrade_test.py（阶段07）    | 33      | 33/33 PASS       |
+| **合计**                        | **103** | **103/103 PASS** |
 
 ## 执行与复现
 
