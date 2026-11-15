@@ -5,8 +5,9 @@ import sys
 from playwright.sync_api import sync_playwright
 
 BASE = "http://127.0.0.1:8000/console/"
-SHOT_DIR = r"e:\supplyguard\docs\screenshots"
 import os
+SHOT_DIR = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "docs", "screenshots"))
 os.makedirs(SHOT_DIR, exist_ok=True)
 
 results = []

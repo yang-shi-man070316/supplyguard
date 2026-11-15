@@ -36,6 +36,13 @@ from run_trace import get_run_trace
 from task_execute import run_execute_all
 from t1_check import get_task_result
 
+# 冻结场景集合 (scenarios/*.json 文件名, 大写), 供 POST /api/runs 校验 scenario_id;
+# 目录缺失时回退到 S1~S5 硬编码集合, 保证后端启动不依赖场景目录存在
+FROZEN_SCENARIOS = {
+    p.stem.upper()
+    for p in (_PROJECT_ROOT / "scenarios").glob("*.json")
+} or {"S1", "S2", "S3", "S4", "S5"}
+
 app = FastAPI(title="SupplyGuard‑阶段01 实时数据流")
 
 app.add_middleware(
@@ -249,6 +256,11 @@ def api_create_run(body: RunCreate):
     """
     if not body.scenario_id.strip():
         raise HTTPException(status_code=400, detail="scenario_id required")
+    if body.scenario_id.strip() not in FROZEN_SCENARIOS:
+        raise HTTPException(
+            status_code=400,
+            detail="scenario_id must be one of %s"
+                   % ", ".join(sorted(FROZEN_SCENARIOS)))
     if body.run_type not in RUN_TYPES:
         raise HTTPException(status_code=400,
                             detail="run_type must be one of %s"

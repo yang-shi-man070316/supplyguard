@@ -13,7 +13,8 @@ RUN-009~010 连续 S1 / RUN-011 唯一 S3 reality / RUN-016 S5), 该序列
     RUN-005  S5 --reset-observations --full      (demo_failure 步骤1)
     RUN-006  复核单 + 回填签收 (REST)             (demo_failure 步骤2~3)
     RUN-007  POST /api/runs 建 run 不执行          → pending (TC-UI-01e)
-             (scenario_id 用非冲突标签 "S9")
+             (scenario_id 用 "S2": 合法标签且不与 S3 冲突,
+              RUN-011 才能是唯一 S3 reality run)
     RUN-008  S1 --full
     RUN-009  S1 --full                           (RUN-010 的上一 reality)
     RUN-010  S1 --full                           (TC-UI-10a 选中)
@@ -118,11 +119,11 @@ def main():
         ok = False
 
     # ---- 7: pending run (TC-UI-01e 依赖) ----
-    # scenario_id 用 "S9" 非冲突标签: RUN-011 必须是唯一 S3 reality run,
+    # scenario_id 用 "S2" (合法且非 S3): RUN-011 必须是唯一 S3 reality run,
     # 否则同场景上一 reality 对比列会破坏 TC-UI-06a 的列数断言
     try:
         st, run = http("POST", "/api/runs",
-                       {"scenario_id": "S9", "run_type": "reality"})
+                       {"scenario_id": "S2", "run_type": "reality"})
         ok &= check("RUN-007 pending 建 run 不执行",
                     st == 201 and run.get("run_id") == "BB03-RUN-007"
                     and run.get("run_status") == "pending", run.get("run_id"))
