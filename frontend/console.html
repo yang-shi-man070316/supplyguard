@@ -370,6 +370,7 @@ window.addEventListener("hashchange", route);
 async function refreshRuns(){
   const runs = await api("/api/runs");
   STATE.runs = runs;
+  syncRunKey();
   syncRunChips();
   await preloadTraces();
   return runs;
@@ -861,6 +862,18 @@ async function renderPlans(el){
   const children = STATE.runs.filter(x =>
     x.parent_run_id === baselineId && x.run_id !== baselineId);
   const group = [baselineId, ...children.map(c => c.run_id)];
+  // 阶段08板块3: reality run 追加同场景上一 reality run 对比 (追溯改动影响)
+  let prevRealityId = null;
+  if(r.run_type === "reality"){
+    const prev = STATE.runs
+      .filter(x => x.scenario_id === r.scenario_id
+        && x.run_type === "reality" && x.run_id !== rid)
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
+    if(prev){
+      prevRealityId = prev.run_id;
+      group.push(prev.run_id);
+    }
+  }
   const groupTraces = [];
   for(const g of group){
     groupTraces.push({ runId: g, trace: g === rid ? t : await traceOf(g) });
@@ -876,8 +889,9 @@ async function renderPlans(el){
     const ass = g.assumptions_json && Object.keys(g.assumptions_json).length
       ? JSON.stringify(g.assumptions_json) : null;
     const cur = runId === rid;
+    const prevMark = runId === prevRealityId ? "（上一 reality run）" : "";
     return `<div class="col${cur ? " cur" : ""}">
-      <div class="hd">${esc(g.scenario_id)} · ${esc(g.run_type)}
+      <div class="hd">${esc(g.scenario_id)} · ${esc(g.run_type)}${prevMark}
         <small>${esc(runId)}${ass ? `<br>假设 ${esc(ass)}` : ""}</small></div>
       ${["PLAN-A","PLAN-B","PLAN-C"].map(n =>
         `<div class="cell"><span class="k">${n}</span>${verdict(n)}</div>`).join("")}
@@ -1190,6 +1204,31 @@ document.getElementById("btnRefresh").onclick = async () => {
     route();
   }catch(e){ toast("刷新失败: " + e.message, true); }
 };
+
+/* ============================================================
+ * 轻量轮询 (阶段08板块3): 每 30s 检测新 run / 状态变化,
+ * 有变化自动刷新视图 (现场 Modify → Run 后前端无需手动刷新)
+ * ============================================================ */
+let lastRunKey = null;
+function syncRunKey(){
+  lastRunKey = STATE.runs.map(r => r.run_id + ":" + r.run_status).join("|");
+}
+async function pollOnce(){
+  try{
+    const runs = await api("/api/runs");
+    const key = runs.map(r => r.run_id + ":" + r.run_status).join("|");
+    if(lastRunKey !== null && key !== lastRunKey){
+      toast("检测到 run 变化, 自动刷新…");
+      STATE.traces = {};
+      await refreshRuns();
+      const { view } = parseHash();
+      go(view, STATE.selectedRun);
+      route();
+    }
+  }catch(e){ /* 后端失联: 静默, 下轮重试 */ }
+}
+setInterval(pollOnce, 30000);
+window.__pollOnce = pollOnce;  // 供 UI 测试手动触发
 
 setConn("connecting", "连接中");
 route().catch(e => {

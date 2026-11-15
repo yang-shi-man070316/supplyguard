@@ -124,6 +124,19 @@ python s5_degrade_test.py        # S5 取证失败降级 + 证据回填复测
 
 回归案例清单与预期输出见 [REGRESSION_CASES.md](REGRESSION_CASES.md)；板块二回归报告见 [PHASE08_BOARD2_REPORT.md](PHASE08_BOARD2_REPORT.md)。
 
+**标准演示脚本（固定可复现流程，含每步 run_id / 预期现象 / 视图变化）：**
+- 成功演示（S1→S2→S3→投送签收→T1 成立）：[demo/demo_success.md](demo/demo_success.md)
+- 失败演示（S5 取证失败→复核→回填→T1 恢复）：[demo/demo_failure.md](demo/demo_failure.md)
+- 阶段08 终验核对报告：[demo/PHASE08_FINAL_VERIFICATION.md](demo/PHASE08_FINAL_VERIFICATION.md)
+
+**最终验收（重新 clone 部署 + 双演示自动复现）：**
+
+```bash
+cd backend
+python e2e_clone_test.py      # 临时 bare 仓库 → git clone → 按 README 完整复现
+python e2e_boot_test.py       # 清空环境从零拉起 (uvicorn + 场景加载 + REST 验证)
+```
+
 ## 7. 项目结构
 
 ```

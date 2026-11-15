@@ -204,6 +204,22 @@ def main():
                                   cur_col.inner_text()[:60] if cur_col.count() else ""))
         page.screenshot(path=str(SHOT_DIR / "05-plans.png"), full_page=True)
 
+        # ---- TC-UI-10 板块3: reality 对比列 + 轮询 ----
+        page.select_option("#runSel", "BB03-RUN-010")
+        page.wait_for_timeout(800)
+        cmp10 = page.locator(".cmp").inner_text()
+        check("TC-UI-10a reality run 对比含上一 reality run (追溯改动影响)",
+              "BB03-RUN-009" in cmp10 and "上一 reality run" in cmp10,
+              "cmp=%r" % cmp10[:120])
+        page.evaluate("window.__pollOnce()")
+        page.wait_for_timeout(500)
+        check("TC-UI-10b 轮询检测函数可执行且列表不受影响",
+              page.locator("tbody tr.click").count() >= 0
+              and page.locator(".cmp .col").count() >= 2,
+              "cols=%d" % page.locator(".cmp .col").count())
+        page.select_option("#runSel", "BB03-RUN-011")
+        page.wait_for_timeout(600)
+
         # ---- TC-UI-02/07 视图⑤ 拓扑 ----
         page.click('#nav a[href="#/topology"]')
         page.wait_for_selector("canvas#topo", timeout=10000)

@@ -169,6 +169,49 @@ def main():
     expect_value_error("TC-B1-03f stocks override 非列表 → ValueError",
                        loader.apply_input_overrides, base, {"stocks": 1})
 
+    # ================= TC-B1-12 acquisition_status (板块3) =================
+    sc5 = loader.load_scenario("S5")
+    base5 = sc5["baseline"]
+    out_u = loader.apply_input_overrides(base5, {"acquisition_status": [
+        {"service_id": "P2", "material_id": "L", "status": "unavailable",
+         "note": "现场取证失败"}]})
+    last = out_u["receipts"][-1]
+    check("TC-B1-12a acquisition_status unavailable 追加取证确认条目",
+          last["status"] == "unavailable"
+          and last["received_quantity"] is None
+          and last["service_id"] == "P2" and last["material_id"] == "L"
+          and "取证失败" in last["error_message"],
+          "last=%r" % last)
+    check("TC-B1-12b 时间戳自动生成且晚于基线最晚观测时间",
+          last["observed_at"] > "2026-11-15T11:48:37",
+          "observed=%r" % last["observed_at"])
+    check("TC-B1-12c 入参基线不被修改",
+          len(base5["receipts"]) == 5,
+          "mutated receipts=%d" % len(base5["receipts"]))
+    out_ok = loader.apply_input_overrides(base5, {"acquisition_status": [
+        {"service_id": "P3", "material_id": "L", "status": "ok",
+         "received_quantity": 8}]})
+    last_ok = out_ok["receipts"][-1]
+    check("TC-B1-12d acquisition_status ok 追加回填凭证 (status=ok, qty=8)",
+          last_ok["status"] == "ok" and last_ok["received_quantity"] == 8,
+          "last=%r" % last_ok)
+    expect_value_error("TC-B1-12e 非法 status → ValueError",
+                       loader.apply_input_overrides, base5,
+                       {"acquisition_status": [
+                           {"service_id": "P3", "material_id": "L",
+                            "status": "bogus"}]})
+    expect_value_error("TC-B1-12f ok 缺数量 → ValueError",
+                       loader.apply_input_overrides, base5,
+                       {"acquisition_status": [
+                           {"service_id": "P3", "material_id": "L",
+                            "status": "ok"}]})
+    expect_value_error("TC-B1-12g unavailable 带数量 → ValueError",
+                       loader.apply_input_overrides, base5,
+                       {"acquisition_status": [
+                           {"service_id": "P3", "material_id": "L",
+                            "status": "unavailable",
+                            "received_quantity": 3}]})
+
     # ================= TC-B1-04 S1 重放 =================
     print("== TC-B1-04/05 S1/S2 重放 ==")
     ok, st, msg, data = loader.replay_scenario("S1")
@@ -285,6 +328,15 @@ def main():
     check("TC-B1-09c 回填不修改旧 S5 run (旧 run 判定保持降级预期)",
           task_status(s5_run) == exp5["tasks"],
           "got %r" % task_status(s5_run))
+
+    # TC-B1-12h: acquisition_status 端到端 —— S5 + ok 回填 overrides → T1 恢复
+    ok, st, msg, data = loader.replay_scenario("S5", overrides={
+        "acquisition_status": [
+            {"service_id": "P3", "material_id": "L", "status": "ok",
+             "received_quantity": 8}]})
+    check("TC-B1-12h acquisition_status ok 回填重放: T1 恢复 established",
+          ok and task_status(data["run_id"])["T1"] == "established",
+          "st=%r msg=%r" % (st, msg))
 
     # ================= TC-B1-10 run_trace =================
     print("== TC-B1-10 run_trace ==")

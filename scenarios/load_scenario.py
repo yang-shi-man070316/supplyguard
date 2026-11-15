@@ -32,10 +32,17 @@
 
 overrides 语法 (reality input_overrides):
     可选 key: stocks / demands / transports / receipts / routes /
-    remaining_time。列表条目按自然键 upsert 覆盖整条
-    (stocks: reserve_id+material_id; demands: service_id+material_id;
-    transports: transport_id; receipts: receipt_id; routes: route_id),
-    自然键不存在则追加; remaining_time 为标量整体替换。
+    remaining_time / acquisition_status。
+    - 前五类列表条目按自然键 upsert 覆盖整条
+      (stocks: reserve_id+material_id; demands: service_id+material_id;
+      transports: transport_id; receipts: receipt_id; routes: route_id),
+      自然键不存在则追加; remaining_time 为标量整体替换。
+    - acquisition_status (阶段08板块3, 现场取证状态修改): 列表条目
+      {"service_id","material_id","status","received_quantity"?,...}
+      status=unavailable → 追加取证失败确认 (received_quantity=null);
+      status=ok → 追加回填合法签收凭证 (received_quantity 必填)。
+      时间戳缺省自动取基线最晚观测时间 +1 分钟 (保证 T3 响应性/T5
+      时间线合法), 也可显式传 observed_at/created_at。
 """
 
 import argparse
@@ -103,6 +110,93 @@ def load_scenario(scenario_id: str) -> dict:
     return data
 
 
+def _latest_baseline_time(baseline: dict) -> str:
+    """基线全部条目的最晚 observed_at (可解析时 +1 分钟), 供自动时间戳兜底。
+
+    无法解析任何时间时返回固定参考时间, 保证 T3 响应性 / T5 时间线合法。
+    """
+    from datetime import datetime, timedelta
+
+    latest = None
+    for sec in ("stocks", "demands", "transports", "receipts", "routes"):
+        for row in baseline.get(sec) or []:
+            try:
+                ts = datetime.fromisoformat(str(row.get("observed_at")))
+            except (TypeError, ValueError):
+                continue
+            latest = ts if latest is None or ts > latest else latest
+    if latest is None:
+        latest = datetime.fromisoformat("2026-11-15T12:00:00")
+    return (latest + timedelta(minutes=1)).isoformat(timespec="seconds")
+
+
+def _apply_acquisition_status(baseline: dict, entries: list) -> dict:
+    """现场取证状态修改 (阶段08板块3): 在 receipts 尾部追加证据条目。
+
+    - status=unavailable: 追加取证失败确认 (received_quantity=null,
+      error_message 取 note 或默认文案) —— 取证失败 ≠ 未送达;
+    - status=ok: 追加回填合法签收凭证 (received_quantity 必填非负整数);
+    - 时间戳缺省自动生成 (基线最晚观测时间 +1min), 可显式传入。
+    """
+    if not isinstance(entries, list):
+        raise ValueError("override acquisition_status must be a list")
+    auto_ts = None
+    receipts = baseline.setdefault("receipts", [])
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                "acquisition_status entries must be objects")
+        service = str(entry.get("service_id") or "").strip()
+        material = str(entry.get("material_id") or "").strip()
+        status = str(entry.get("status") or "").strip()
+        if not service or not material:
+            raise ValueError(
+                "acquisition_status entry requires service_id/material_id")
+        if status not in ("ok", "unavailable"):
+            raise ValueError(
+                "acquisition_status status must be ok or unavailable "
+                "(got %r)" % status)
+        qty = entry.get("received_quantity")
+        if status == "ok":
+            if isinstance(qty, bool) or not isinstance(qty, int) or qty < 0:
+                raise ValueError(
+                    "acquisition_status ok requires received_quantity "
+                    "non-negative integer")
+        elif qty is not None:
+            raise ValueError(
+                "acquisition_status unavailable must not carry "
+                "received_quantity")
+        if auto_ts is None:
+            auto_ts = _latest_baseline_time(baseline)
+        seq = len(receipts) + i + 1
+        observed = str(entry.get("observed_at") or auto_ts)
+        created = str(entry.get("created_at") or observed)
+        if status == "unavailable":
+            receipts.append({
+                "receipt_id": str(entry.get("receipt_id")
+                                  or "CF-OV-%03d" % seq),
+                "dispatch_id": entry.get("dispatch_id")
+                or ("DSP-OV-%03d" % seq),
+                "service_id": service, "material_id": material,
+                "received_quantity": None, "status": "unavailable",
+                "observed_at": observed, "created_at": created,
+                "error_message": str(entry.get("note") or entry.get(
+                    "error_message")
+                    or "现场取证失败: 无有效签收凭证, 送达与否未知"),
+            })
+        else:
+            receipts.append({
+                "receipt_id": str(entry.get("receipt_id")
+                                  or "RCT-OV-%03d" % seq),
+                "dispatch_id": entry.get("dispatch_id")
+                or ("DSP-OV-%03d" % seq),
+                "service_id": service, "material_id": material,
+                "received_quantity": qty, "status": "ok",
+                "observed_at": observed, "created_at": created,
+            })
+    return baseline
+
+
 def apply_input_overrides(baseline: dict, overrides: dict) -> dict:
     """reality 现场变量调整: 把 input_overrides 叠加到基线副本上 (纯函数)。
 
@@ -121,9 +215,13 @@ def apply_input_overrides(baseline: dict, overrides: dict) -> dict:
                     "override remaining_time must be a non-negative integer")
             out[key] = value
             continue
+        if key == "acquisition_status":
+            _apply_acquisition_status(out, value)
+            continue
         if key not in _NATURAL_KEYS:
             raise ValueError(
-                "unsupported override key %r (expected %s / remaining_time)"
+                "unsupported override key %r (expected %s / remaining_time "
+                "/ acquisition_status)"
                 % (key, "/".join(sorted(_NATURAL_KEYS))))
         if not isinstance(value, list):
             raise ValueError("override %s must be a list" % key)
@@ -176,7 +274,8 @@ def derive_services_materials(baseline: dict):
     return services, materials
 
 
-def seed_observations(scenario_id: str, baseline: dict) -> dict:
+def seed_observations(scenario_id: str, baseline: dict,
+                      reset: bool = False) -> dict:
     """把冻结基线写入观测表 (幂等, source_type='scenario_<id>' 行先清后种)。
 
     - demands / stocks / transports / receipts(可入库部分) 均以冻结
@@ -185,7 +284,10 @@ def seed_observations(scenario_id: str, baseline: dict) -> dict:
       取证确认无法入 receipt_records_v2 (表无 status 列且数量非空),
       跳过表写入 (它们经 run 快照校准进入判定, 与 inject_s5 同口径);
     - receipt_id 已存在且业务值一致 → 视为已种跳过; 不一致 → 中止报错
-      (禁止覆盖非本场景来源的历史签收)。
+      (禁止覆盖非本场景来源的历史签收);
+    - reset=True (现场复位, 阶段08板块3): 先清空四张观测表全部行再种,
+      使「现场」口径完全等于本场景 —— 供标准演示/终验在干净环境复现
+      (会删除 MQTT/历史观测数据, 仅演示环境使用)。
     返回 {seeded: {...}, skipped: {...}} 摘要。
     """
     source = "scenario_%s" % scenario_id.lower()
@@ -193,6 +295,11 @@ def seed_observations(scenario_id: str, baseline: dict) -> dict:
     seeded, skipped = {"demands": 0, "stocks": 0, "transports": 0,
                        "receipts": 0}, {"receipts": []}
     try:
+        if reset:
+            conn.execute("DELETE FROM demand_records")
+            conn.execute("DELETE FROM stock_observations")
+            conn.execute("DELETE FROM transport_observations")
+            conn.execute("DELETE FROM receipt_records_v2")
         conn.execute("DELETE FROM demand_records WHERE source_type=?", (source,))
         conn.execute("DELETE FROM stock_observations WHERE source_type=?", (source,))
         conn.execute("DELETE FROM transport_observations WHERE source_type=?", (source,))
@@ -295,16 +402,17 @@ def _replace_run_snapshot(run_id: str, baseline: dict) -> tuple:
 
 
 def create_baseline_run(scenario_id: str, overrides: dict = None,
-                        variant: str = None) -> tuple:
+                        variant: str = None, reset: bool = False) -> tuple:
     """种基线 + 建 reality run + 快照校准为冻结基线 (run 仍 pending)。
 
+    reset=True 时先清空四张观测表 (现场复位, 演示/终验环境用)。
     返回 (ok, http_status, msg, data); data = {run, scenario_id}。
     """
     scenario_id = str(scenario_id).strip().upper()
     scenario = load_scenario(scenario_id)
     baseline, vmeta = resolve_variant(scenario, variant)
     baseline = apply_input_overrides(baseline, overrides)
-    seed = seed_observations(scenario_id, baseline)
+    seed = seed_observations(scenario_id, baseline, reset=reset)
     ok, st, msg, run = create_run(scenario_id, None, RUN_TYPE)
     if not ok:
         return False, st, msg, None
@@ -328,14 +436,15 @@ def create_baseline_run(scenario_id: str, overrides: dict = None,
 
 
 def replay_scenario(scenario_id: str, overrides: dict = None,
-                    variant: str = None) -> tuple:
+                    variant: str = None, reset: bool = False) -> tuple:
     """完整重放: 种基线 → 建 run → T1~T5 → 缺口 → 方案 → 方案判定。
 
+    reset=True 时先清空四张观测表 (现场复位)。
     返回 (ok, http_status, msg, data); 每步失败时 data 携带已完成的步骤。
     """
     scenario_id = str(scenario_id).strip().upper()
     ok_c, st_c, msg_c, created = create_baseline_run(scenario_id, overrides,
-                                                     variant)
+                                                     variant, reset=reset)
     if not ok_c:
         return False, st_c, msg_c, None
     run_id = created["run_id"]
@@ -563,6 +672,9 @@ def main(argv=None):
                         help="场景变体 (如 S5 的 degrade/refill)")
     parser.add_argument("--full", action="store_true",
                         help="完整重放: 种基线→建run→T1~T5→缺口→方案→判定")
+    parser.add_argument("--reset-observations", action="store_true",
+                        help="现场复位: 种基线前清空四张观测表 (会删除 MQTT/"
+                             "历史观测数据, 仅标准演示/终验的干净环境使用)")
     parser.add_argument("--dry-run", action="store_true",
                         help="只解析场景+overrides, 打印基线摘要, 不写库")
     parser.add_argument("--whatif", metavar="KEY|JSON",
@@ -614,14 +726,19 @@ def main(argv=None):
                 "baseline": baseline,
             }))
             return 0
+        if args.reset_observations:
+            print("警告: --reset-observations 将清空全部观测表数据 "
+                  "(现场复位), 仅演示/终验环境使用.", file=sys.stderr)
         if args.full:
             ok, st, msg, data = replay_scenario(
-                scenario_id, overrides, args.variant)
+                scenario_id, overrides, args.variant,
+                reset=args.reset_observations)
             print(_fmt({"ok": ok, "http_status": st, "msg": msg,
                         "data": data}))
             return 0 if ok else 1
-        ok, st, msg, data = create_baseline_run(scenario_id, overrides,
-                                                args.variant)
+        ok, st, msg, data = create_baseline_run(
+            scenario_id, overrides, args.variant,
+            reset=args.reset_observations)
         print(_fmt({"ok": ok, "http_status": st, "msg": msg, "data": data}))
         return 0 if ok else 1
     except (ValueError, OSError) as exc:
