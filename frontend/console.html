@@ -100,10 +100,49 @@ code{background:#F2F4F7;padding:1px 6px;border-radius:4px;font-size:12px}
 .chain{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 0}
 .chain .seg{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
   border:1px solid var(--line);border-radius:8px;background:#FBFCFB;font-size:12.5px}
-.chain .seg button{background:none;border:none;padding:0;cursor:pointer;font-size:12.5px;
-  font-weight:650;color:var(--blue);text-decoration:underline dotted}
+.chain .seg button{background:#fff;border:1px solid var(--line);border-radius:99px;
+  padding:0 8px;cursor:pointer;font-size:11.5px;font-weight:650;color:var(--blue);
+  line-height:1.7;text-decoration:none}
+.chain .seg button:hover{border-color:var(--blue)}
 .chain .arrow{color:var(--sub)}
 .chain .seg.hl{border-color:var(--ink);background:#fff}
+
+/* ===== KPI 数字卡 (总览页) ===== */
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);padding:14px 16px 12px;border-left:4px solid var(--ink)}
+.kpi .v{font-size:30px;font-weight:700;line-height:1.05;font-family:var(--num)}
+.kpi .l{font-size:12px;color:var(--sub);margin-top:3px}
+.kpi[data-tone="ink"]{border-left-color:var(--ink)}
+.kpi[data-tone="teal"]{border-left-color:var(--teal)}
+.kpi[data-tone="blue"]{border-left-color:var(--blue)}
+.kpi[data-tone="green"]{border-left-color:var(--green)}
+.kpi[data-tone="gray"]{border-left-color:var(--gray)}
+
+/* ===== T1→T5 通关流程条 (总览页选中 run) ===== */
+.tflow{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap;padding:6px 0 2px}
+.tfnode{display:flex;flex-direction:column;align-items:center;gap:5px;flex:1;
+  min-width:96px;padding:10px 8px 8px;border-radius:12px;cursor:pointer;
+  border:1px solid transparent;transition:background .15s,border-color .15s,transform .15s}
+.tfnode:hover{background:#F6F8F7;border-color:var(--line)}
+.tfnode:active{transform:translateY(1px)}
+.tfnode:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.tfdot{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;
+  justify-content:center;font-family:var(--num);font-size:13px;font-weight:700;
+  background:#EDF1F0;color:var(--sub);transition:transform .15s}
+.tfnode:hover .tfdot{transform:translateY(-2px)}
+.tfname{font-size:12px;font-weight:650;text-align:center;line-height:1.3}
+.tfstatus{font-size:11.5px;font-weight:650}
+.tfarrow{display:flex;align-items:center;color:var(--sub);font-size:14px;
+  padding-top:8px}
+.tfnode.st-established .tfdot{background:#E7F2EC;color:var(--green)}
+.tfnode.st-established .tfstatus{color:var(--green)}
+.tfnode.st-blocked .tfdot{background:#F9E9E5;color:var(--cinnabar)}
+.tfnode.st-blocked .tfstatus{color:var(--cinnabar)}
+.tfnode.st-pending_verification .tfdot{background:#F7F0E1;color:var(--amber)}
+.tfnode.st-pending_verification .tfstatus{color:var(--amber)}
+.tfnode.st-unknown .tfdot{background:#EDF1F0;color:var(--gray)}
+.tfnode.st-unknown .tfstatus{color:var(--gray)}
 
 /* ===== 拓扑 ===== */
 #topo{width:100%;height:480px;border-radius:10px;background:#101820;display:block}
@@ -130,12 +169,28 @@ code{background:#F2F4F7;padding:1px 6px;border-radius:4px;font-size:12px}
 .cmp .col .hd small{display:block;font-weight:400;color:var(--sub);font-family:var(--num);font-size:11px}
 .cmp .col .cell{padding:8px 10px;border-bottom:1px solid #F0F3F1;font-size:12.5px}
 .cmp .col .cell .k{color:var(--sub);font-size:11.5px;display:block}
+.cmp .col.cur{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+.cmp .col.cur .hd{background:var(--ink);color:#fff}
+.cmp .col.cur .hd small{color:#B9C6D1}
 
 /* ===== 缺口矩阵 ===== */
 .gapcell{border-left:3px solid transparent;padding:2px 0}
 .gapcell .main{font-family:var(--num);font-weight:650}
 .gapcell.gap{border-left-color:var(--cinnabar)}
 .gapcell.neg{color:var(--cinnabar);font-weight:650}
+.gapcell.sel{background:#FDF6E3;border-radius:6px;
+  box-shadow:0 0 0 1px var(--amber) inset}
+
+/* ===== 证据内容 JSON 预览 (全局证据列表) ===== */
+.ev-json{background:#F6F8F7;border:1px solid var(--line);border-radius:6px;
+  padding:6px 10px;font-size:12px;font-family:var(--num);line-height:1.55;
+  max-width:680px;max-height:320px;overflow:auto;margin-top:6px}
+.ev-json pre{margin:0;white-space:pre-wrap;word-break:break-all;
+  font-family:inherit;font-size:12px;color:var(--ink)}
+.ev-toggle{border:1px solid var(--line);background:#fff;color:var(--blue);
+  padding:1px 9px;border-radius:99px;font-size:11px;cursor:pointer;
+  font-weight:650;margin-left:6px;vertical-align:middle;line-height:1.7}
+.ev-toggle:hover{border-color:var(--blue)}
 
 /* ===== 弹层与提示 ===== */
 .toast{position:fixed;right:20px;bottom:20px;background:var(--ink);color:#fff;
@@ -148,6 +203,8 @@ code{background:#F2F4F7;padding:1px 6px;border-radius:4px;font-size:12px}
 
 @media (max-width:760px){
   .masthead{flex-direction:column;align-items:flex-start;gap:12px}
+  .kpis{grid-template-columns:repeat(2,1fr)}
+  .card table{display:block;overflow-x:auto}
 }
 </style>
 </head>
@@ -373,16 +430,14 @@ function runOf(runId){ return STATE.runs.find(r => r.run_id === runId); }
 async function renderOverview(el){
   const stats = summaryStats();
   el.innerHTML = `
-    <div class="card">
-      <h2>run 汇总 <span class="hint">reality / what-if · 完成 / 待执行</span></h2>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
-        <span class="chip">run 总数 <b>${stats.total}</b></span>
-        <span class="chip t-reality">reality <b>${stats.reality}</b></span>
-        <span class="chip t-whatif">what-if <b>${stats.whatif}</b></span>
-        <span class="chip t-completed">completed <b>${stats.completed}</b></span>
-        <span class="chip t-pending">pending <b>${stats.pending}</b></span>
-      </div>
+    <div class="kpis">
+      ${kpiHtml("run 总数", stats.total, "ink", "全部保障运行记录")}
+      ${kpiHtml("reality", stats.reality, "teal", "真实运行")}
+      ${kpiHtml("what-if", stats.whatif, "blue", "假设推演")}
+      ${kpiHtml("completed", stats.completed, "green", "已完成验算")}
+      ${kpiHtml("pending", stats.pending, "gray", "待执行")}
     </div>
+    <div id="flowSlot"></div>
     <div class="card">
       <h2>保障任务列表 <span class="hint">点击行展开 run trace 追溯链路</span></h2>
       <table>
@@ -399,6 +454,12 @@ async function renderOverview(el){
     <div id="chainSlot"></div>`;
   bindOverview(el);
 }
+function kpiHtml(label, value, tone, hint){
+  return `<div class="kpi" data-tone="${tone}" title="${esc(hint)}">
+    <div class="v num">${value}</div>
+    <div class="l">${esc(label)}</div>
+  </div>`;
+}
 function summaryStats(){
   const s = {total:STATE.runs.length, reality:0, whatif:0, completed:0, pending:0};
   STATE.runs.forEach(r => {
@@ -409,7 +470,10 @@ function summaryStats(){
 }
 function rowHtml(r){
   const t = STATE.traces[r.run_id];
-  const cells = ["T1","T2","T3","T4","T5"].map(tid => {
+  const pending = r.run_status !== "completed";
+  const cells = ["T1","T2","T3","T4","T5"].map((tid, i) => {
+    if(pending)
+      return `<td>${i === 0 ? '<span class="t t-pending">待执行</span>' : ""}</td>`;
     const st = t && t.summary && t.summary[tid];
     return `<td>${tag(T_STATUS, st, null)}</td>`;
   }).join("");
@@ -424,6 +488,42 @@ function rowHtml(r){
     <td class="note" style="color:var(--sub);font-size:12px">${esc(r.created_at)}</td>
   </tr>`;
 }
+const T_FLOW = [
+  {id:"T1", name:"需求保障"},
+  {id:"T2", name:"运输可达"},
+  {id:"T3", name:"响应时效"},
+  {id:"T4", name:"签收闭环"},
+  {id:"T5", name:"证据一致"},
+];
+function flowCardHtml(t){
+  const r = t.run;
+  const nodes = T_FLOW.map((f, i) => {
+    const st = t.summary && t.summary[f.id];
+    const m = st && T_STATUS[st];
+    const cls = m ? "st-" + st : "st-unknown";
+    const label = m ? m.text : (r.run_status === "pending" ? "待执行" : "未执行");
+    return `<div class="tfnode ${cls}" tabindex="0" role="button"
+      title="查看 ${f.id} ${f.name} 依赖明细"
+      onclick="go('gaps','${esc(r.run_id)}','task=${f.id}')"
+      onkeydown="if(event.key==='Enter'){go('gaps','${esc(r.run_id)}','task=${f.id}')}">
+      <div class="tfdot">${f.id}</div>
+      <div class="tfname">${f.name}</div>
+      <div class="tfstatus">${label}</div>
+    </div>${i < T_FLOW.length - 1 ? '<div class="tfarrow">→</div>' : ""}`;
+  }).join("");
+  return `<div class="card">
+    <h2>${esc(r.run_id)} · T1→T5 通关状态 <span class="hint">点击节点查看依赖明细</span></h2>
+    <div class="tflow">${nodes}</div>
+  </div>`;
+}
+function flowPlaceholder(){
+  return `<div class="card">
+    <h2>T1→T5 通关状态 <span class="hint">选择 run 后展示</span></h2>
+    <div style="color:var(--sub);font-size:12.5px;padding:6px 0 2px">
+      在保障任务列表点击任意 run 行，或使用顶部 run 选择器。
+    </div>
+  </div>`;
+}
 async function bindOverview(el){
   el.querySelectorAll("tr.click").forEach(tr => {
     tr.addEventListener("click", () => {
@@ -432,10 +532,16 @@ async function bindOverview(el){
     });
   });
   const rid = STATE.selectedRun;
-  if(!rid) return;
+  const flowSlot = document.getElementById("flowSlot");
+  if(!rid){ flowSlot.innerHTML = flowPlaceholder(); return; }
   const t = await traceOf(rid);
   const slot = document.getElementById("chainSlot");
-  if(!t){ slot.innerHTML = `<div class="empty"><b>trace 不可用</b></div>`; return; }
+  if(!t){
+    flowSlot.innerHTML = flowPlaceholder();
+    slot.innerHTML = `<div class="empty"><b>trace 不可用</b></div>`;
+    return;
+  }
+  flowSlot.innerHTML = flowCardHtml(t);
   slot.innerHTML = `<div class="card">
     <h2>Run Trace 追溯链路 <span class="hint">任务 → T状态 → 缺口 → 证据 → 方案，一路下钻</span></h2>
     ${chainHtml(t)}
@@ -579,6 +685,43 @@ function emptyHtml(msg){
 }
 
 /* ============================================================
+ * 证据内容渲染: JSON 简短预览 + 展开/收起格式化展示
+ * (仅全局证据列表「内容」列使用; 非 JSON 文本原样输出)
+ * ============================================================ */
+function tryParseJson(text){
+  if(typeof text !== "string" || !text.trim()) return {ok:false, value:null};
+  try{ return {ok:true, value:JSON.parse(text)}; }
+  catch(e){ return {ok:false, value:null}; }
+}
+function toggleJson(id){
+  const pre = document.getElementById(id);
+  const btn = document.getElementById(id + "-btn");
+  if(!pre || !btn) return;
+  const hidden = pre.classList.toggle("hidden");
+  btn.textContent = hidden ? "展开" : "收起";
+}
+function evContentHtml(raw, uid){
+  if(raw === null || raw === undefined || raw === "") return "–";
+  let value;
+  if(typeof raw === "string"){
+    const parsed = tryParseJson(raw);
+    if(!parsed.ok) return `<code>${esc(raw)}</code>`;  // 非 JSON 文本原样输出
+    value = parsed.value;
+  }else{
+    value = raw;  // 防御: 后端已解析为对象的场景
+  }
+  const compact = JSON.stringify(value);
+  const PREVIEW_LEN = 100;
+  const preview = compact.length > PREVIEW_LEN
+    ? esc(compact.slice(0, PREVIEW_LEN)) + "…"
+    : esc(compact);
+  const pretty = JSON.stringify(value, null, 2);
+  return `<code>${preview}</code>
+    <button class="ev-toggle" id="${esc(uid)}-btn" onclick="toggleJson('${esc(uid)}')">展开</button>
+    <pre class="ev-json hidden" id="${esc(uid)}">${esc(pretty)}</pre>`;
+}
+
+/* ============================================================
  * 视图③ 调配/接收证据与运行
  * ============================================================ */
 async function renderEvidence(el){
@@ -676,11 +819,11 @@ async function renderEvidence(el){
     }catch(e){ toast("全局证据加载失败: " + e.message, true); }
     document.getElementById("evGlobal").innerHTML = list.length ? `<table>
       <thead><tr><th>类型</th><th>source_id</th><th>状态</th><th>时间</th><th>内容</th></tr></thead>
-      <tbody>${list.map(e => `<tr>
+      <tbody>${list.map((e, i) => `<tr>
         <td>${esc(e.evidence_type)}</td><td class="num">${esc(e.source_id)}</td>
         <td>${tag(EVID_STATUS, e.status, null)}</td>
         <td class="num" style="font-size:12px">${esc(e.observed_at)}</td>
-        <td style="font-size:12px"><code>${esc(String(e.value_json||"").slice(0,120))}</code></td>
+        <td style="font-size:12px">${evContentHtml(e.value_json, "ev-" + i + "-" + (e.evidence_id || "x"))}</td>
       </tr>`).join("")}</tbody></table>`
       : `<div class="empty"><b>无匹配证据</b></div>`;
   };
@@ -732,7 +875,8 @@ async function renderPlans(el){
     const ts = name => tag(T_STATUS, trace.summary && trace.summary[name], null);
     const ass = g.assumptions_json && Object.keys(g.assumptions_json).length
       ? JSON.stringify(g.assumptions_json) : null;
-    return `<div class="col">
+    const cur = runId === rid;
+    return `<div class="col${cur ? " cur" : ""}">
       <div class="hd">${esc(g.scenario_id)} · ${esc(g.run_type)}
         <small>${esc(runId)}${ass ? `<br>假设 ${esc(ass)}` : ""}</small></div>
       ${["PLAN-A","PLAN-B","PLAN-C"].map(n =>
@@ -813,10 +957,22 @@ function createTopoApp(canvas){
   const nodes = {}, lines = [];
   const group = new THREE.Group(); scene.add(group);
 
+  function roundRectPath(g, x, y, w, h, r){
+    g.beginPath();
+    g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r);
+    g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r);
+    g.arcTo(x, y, x + w, y, r);
+    g.closePath();
+  }
   function labelSprite(text){
     const c = document.createElement("canvas"); c.width = 256; c.height = 96;
     const g = c.getContext("2d");
-    g.fillStyle = "rgba(255,255,255,0.94)"; g.font = "600 44px 'Segoe UI','Microsoft YaHei',sans-serif";
+    g.fillStyle = "rgba(38,52,66,0.92)";  // 深蓝灰 chip 底 (比背景亮一档, 边界可见)
+    roundRectPath(g, 58, 10, 140, 76, 22);
+    g.fill();
+    g.fillStyle = "#FFFFFF"; g.font = "600 44px 'Segoe UI','Microsoft YaHei',sans-serif";
     g.textAlign = "center"; g.textBaseline = "middle";
     g.fillText(text, 128, 48);
     const tex = new THREE.CanvasTexture(c);
@@ -827,14 +983,17 @@ function createTopoApp(canvas){
   Object.entries(NODE_DEF).forEach(([id, d]) => {
     const mesh = new THREE.Mesh(
       new THREE.SphereGeometry(0.34, 24, 24),
-      new THREE.MeshStandardMaterial({color:0x8A97A3, roughness:.35, metalness:.1}));
+      new THREE.MeshStandardMaterial({color:0x8A97A3, roughness:.35, metalness:.1,
+        emissive:0x8A97A3, emissiveIntensity:.28}));  // 微光: 状态色自发光
     mesh.position.set(d.x, 0, d.z);
     mesh.userData = {id, kind:d.kind};
     const lbl = labelSprite(id);
-    lbl.position.set(d.x, 0.85, d.z);
+    lbl.position.set(d.x, 0.88, d.z);
     group.add(mesh); group.add(lbl);
     nodes[id] = {mesh, lbl, def:d};
   });
+  const REDUCED_MOTION = window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   RESERVES.forEach(rv => SERVICES.forEach(sv => {
     const a = NODE_DEF[rv], b = NODE_DEF[sv];
     const pts = [];
@@ -845,11 +1004,24 @@ function createTopoApp(canvas){
       const y = 0.25*Math.sin(Math.PI*tt);
       pts.push(new THREE.Vector3(x, y, z));
     }
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({color:0x8A97A3, transparent:true, opacity:.75}));
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const geo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(24));
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial(
+      {color:0x8A97A3, transparent:true, opacity:.7}));
     line.userData = {from:rv, to:sv};
     group.add(line);
-    lines.push(line);
+    // 投送通道流动光点 (缓慢循环; reduced-motion 时静止)
+    const dots = [0, .5].map(phase => {
+      const dot = new THREE.Mesh(
+        new THREE.SphereGeometry(0.07, 10, 10),
+        new THREE.MeshBasicMaterial(
+          {color:0x9AD1B8, transparent:true, opacity:.9}));
+      const at = REDUCED_MOTION ? phase : ((performance.now()/1000)*0.12 + phase) % 1;
+      dot.position.copy(curve.getPoint(at));
+      group.add(dot);
+      return {mesh: dot, phase};
+    });
+    lines.push({line, curve, dots});
   }));
   group.add(new THREE.AmbientLight(0xffffff, .75));
   const dl = new THREE.DirectionalLight(0xffffff, .9); dl.position.set(5,10,7); group.add(dl);
@@ -883,9 +1055,16 @@ function createTopoApp(canvas){
     return {key: st || "unknown", color: map[st] || 0x8A97A3};
   }
 
-  // 渲染循环: 更新相机矩阵与 mesh matrixWorld, 保证渲染与射线检测一致
+  // 渲染循环: 更新相机矩阵与 mesh matrixWorld, 保证渲染与射线检测一致;
+  // 光点沿投送连线缓慢流动 (prefers-reduced-motion 时静止)
   (function animate(){
     requestAnimationFrame(animate);
+    if(!REDUCED_MOTION){
+      const now = performance.now();
+      lines.forEach(l => l.dots.forEach(d => {
+        d.mesh.position.copy(l.curve.getPoint(((now/1000)*0.12 + d.phase) % 1));
+      }));
+    }
     controls.update();
     renderer.render(scene, camera);
   })();
@@ -915,10 +1094,21 @@ function createTopoApp(canvas){
       </tbody></table>
       ${blk.length ? `<div style="margin-top:4px;color:var(--cinnabar)">缺口: ${blk.map(b => `${esc(b.material_id)} ${b.gap}`).join(" · ")}</div>` : ""}`;
   }
+  let hovered = null;
+  const meshes = Object.values(nodes).map(n => n.mesh);
   canvas.addEventListener("mousemove", e => {
     const rect = canvas.getBoundingClientRect();
     mouse.x = ((e.clientX-rect.left)/rect.width)*2 - 1;
     mouse.y = -((e.clientY-rect.top)/rect.height)*2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(meshes);
+    const id = hits.length ? hits[0].object.userData.id : null;
+    if(id !== hovered){
+      if(hovered && nodes[hovered]) nodes[hovered].mesh.scale.setScalar(1);
+      hovered = id;
+      if(hovered) nodes[hovered].mesh.scale.setScalar(1.18);
+      canvas.style.cursor = hovered ? "pointer" : "default";
+    }
   });
   canvas.addEventListener("click", () => {
     raycaster.setFromCamera(mouse, camera);
@@ -936,11 +1126,18 @@ function createTopoApp(canvas){
   function setRun(trace){
     currentTrace = trace;
     const t2 = t2Status(trace);
-    lines.forEach(l => { l.material.color.setHex(t2.color);
-      l.material.opacity = trace ? .8 : .35; });
+    lines.forEach(l => {
+      l.line.material.color.setHex(t2.color);
+      l.line.material.opacity = trace ? .7 : .35;
+      l.dots.forEach(d => {
+        d.mesh.material.color.setHex(t2.color);
+        d.mesh.material.opacity = trace ? .9 : .4;
+      });
+    });
     Object.entries(nodes).forEach(([id, n]) => {
       const st = statusOf(id, trace);
       n.mesh.material.color.setHex(st.color);
+      n.mesh.material.emissive.setHex(st.color);  // 微光随状态色
     });
     const hint = document.getElementById("topoHint");
     if(hint){
@@ -958,6 +1155,11 @@ function createTopoApp(canvas){
       camera.updateProjectionMatrix();
     },
     setRun,
+    /* 流动光点世界坐标 (供 UI 测试/调试验证动画) */
+    dotPositions(){
+      return lines.map(l => l.dots.map(d =>
+        [d.mesh.position.x, d.mesh.position.y, d.mesh.position.z]));
+    },
     /* 节点屏幕坐标 (canvas CSS 像素), 供 UI 测试/调试点击定位 */
     screenPosOf(id){
       const n = nodes[id];

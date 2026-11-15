@@ -1,11 +1,14 @@
 """阶段08板块1: 整合版前端 UI 自测脚本 (Playwright, 只读访问后端).
 
 覆盖用例 (TC-UI-*):
-    TC-UI-01 页面加载: 四视图 + 拓扑导航渲染, run 列表与 T1~T5 状态加载
+    TC-UI-01 页面加载: 四视图 + 拓扑导航渲染, run 列表与 T1~T5 状态加载;
+              KPI 数字卡 (01d)
     TC-UI-02 视图切换: ①总览 → ②缺口 → ③证据 → ④方案 → ⑤拓扑 全部正常
-    TC-UI-03 run_trace 下钻: 总览行点击 → 追溯链路面板 (任务→缺口→证据→方案)
+    TC-UI-03 run_trace 下钻: 总览行点击 → 追溯链路面板 (任务→缺口→证据→方案);
+              T1→T5 通关流程条渲染与点击下钻 (03c~03e)
     TC-UI-04 缺口与依赖: P1/P2/P3 需求/接收/缺口矩阵 + blockers + 依赖明细
-    TC-UI-05 证据与运行: 签收记录、关联证据、全局证据列表 (类型筛选)
+    TC-UI-05 证据与运行: 签收记录、关联证据、全局证据列表 (类型筛选);
+              内容列 JSON 预览默认收起、展开格式化、再收起 (TC-UI-05c~f)
     TC-UI-06 方案与对比: PLAN-A/B/C 判定; reality 基线 + what-if 子运行并排对比
     TC-UI-07 Three.js 拓扑: 固定节点/连线渲染; 选中 run 状态联动;
               点击节点弹出简要信息
@@ -66,6 +69,14 @@ def main():
         check("TC-UI-01c T1~T5 状态芯片已加载 (trace 预取)",
               page.locator("tbody tr.click td .t").count() >= 10,
               "chips=%d" % page.locator("tbody tr.click td .t").count())
+        check("TC-UI-01d KPI 数字卡渲染 (5 张)",
+              page.locator(".kpi").count() == 5,
+              "kpi=%d" % page.locator(".kpi").count())
+        check("TC-UI-01e pending 行 T 列降噪显示「待执行」",
+              "待执行" in page.locator(
+                  'tr.click[data-run="BB03-RUN-007"]').inner_text(),
+              "row=%r" % page.locator(
+                  'tr.click[data-run="BB03-RUN-007"]').inner_text()[:80])
         page.screenshot(path=str(SHOT_DIR / "01-overview.png"), full_page=True)
 
         # ---- TC-UI-03 选中 S3 基线 run → 追溯链路 ----
@@ -78,6 +89,33 @@ def main():
         check("TC-UI-03b 链路包含 PLAN 方案判定",
               "PLAN-A" in chain_text and "PLAN-B" in chain_text,
               "chain=%r" % chain_text[:160])
+
+        # ---- T1→T5 通关流程条 ----
+        page.wait_for_selector("#flowSlot .tfnode", timeout=10000)
+        check("TC-UI-03c T1→T5 流程条渲染 5 节点",
+              page.locator("#flowSlot .tfnode").count() == 5,
+              "nodes=%d" % page.locator("#flowSlot .tfnode").count())
+        flow_text = page.locator("#flowSlot").inner_text()
+        check("TC-UI-03d 流程条含状态词 (T1 受阻)",
+              "受阻" in flow_text and "成立" in flow_text,
+              "flow=%r" % flow_text[:120])
+        page.click("#flowSlot .tfnode")
+        page.wait_for_selector(".gapcell", timeout=10000)
+        check("TC-UI-03e 点击流程条节点下钻到缺口视图",
+              "#/gaps" in page.evaluate("location.hash"),
+              "hash=%r" % page.evaluate("location.hash"))
+        check("TC-UI-03f 依赖明细定位高亮生效 (tr.sel)",
+              page.locator("tr.sel").count() >= 1,
+              "sel=%d" % page.locator("tr.sel").count())
+        # 缺口定位高亮: focus=blocker=P1/W
+        page.goto(BASE_URL + "/console/#/gaps?run=BB03-RUN-011&focus=blocker=P1/W",
+                  wait_until="networkidle")
+        page.wait_for_selector(".gapcell.sel", timeout=10000)
+        check("TC-UI-03g 缺口定位高亮生效 (.gapcell.sel)",
+              page.locator(".gapcell.sel").count() == 1,
+              "sel=%d" % page.locator(".gapcell.sel").count())
+        page.click('#nav a[href="#/overview"]')
+        page.wait_for_selector("tbody tr.click", timeout=10000)
         page.screenshot(path=str(SHOT_DIR / "02-overview-trace.png"), full_page=True)
 
         # ---- TC-UI-02/04 视图② 缺口与依赖 ----
@@ -105,6 +143,33 @@ def main():
         chain2 = page.locator(".card").nth(2).inner_text()
         check("TC-UI-05a 证据溯源链路面板渲染", "溯源链路" in chain2,
               "chain2=%r" % chain2[:80])
+
+        # ---- 内容列 JSON 预览: 展开 / 收起 ----
+        page.wait_for_function(
+            "document.querySelectorAll('#evGlobal .ev-toggle').length > 0",
+            timeout=8000)
+        toggles = page.locator("#evGlobal .ev-toggle").count()
+        check("TC-UI-05c 内容列 JSON 预览展开按钮存在", toggles >= 1,
+              "toggles=%d" % toggles)
+        first_pre = page.locator("#evGlobal .ev-json").first
+        check("TC-UI-05d 默认收起 (pre 隐藏)",
+              not first_pre.is_visible(),
+              "pre visible unexpectedly")
+        page.locator("#evGlobal .ev-toggle").first.click()
+        page.wait_for_timeout(250)
+        check("TC-UI-05e 展开后显示格式化 JSON 且按钮变为收起",
+              first_pre.is_visible()
+              and "收起" in page.locator("#evGlobal .ev-toggle").first.inner_text(),
+              "btn=%r pre_visible=%r" % (
+                  page.locator("#evGlobal .ev-toggle").first.inner_text(),
+                  first_pre.is_visible()))
+        page.locator("#evGlobal .ev-toggle").first.click()
+        page.wait_for_timeout(250)
+        check("TC-UI-05f 再次点击收起恢复预览",
+              not first_pre.is_visible()
+              and "展开" in page.locator("#evGlobal .ev-toggle").first.inner_text(),
+              "btn=%r" % page.locator("#evGlobal .ev-toggle").first.inner_text())
+
         page.select_option("#evFilter", "receipt")
         page.click("#evReload")
         page.wait_for_function(
@@ -131,6 +196,12 @@ def main():
         check("TC-UI-06b 对比列含 reality/what-if 与假设标注",
               "reality" in cmp_text and "what-if" in cmp_text,
               "cmp=%r" % cmp_text[:150])
+        cur_col = page.locator(".cmp .col.cur")
+        check("TC-UI-06c 当前 run 对比列高亮 (.col.cur)",
+              cur_col.count() == 1
+              and "BB03-RUN-011" in cur_col.inner_text(),
+              "cur=%d text=%r" % (cur_col.count(),
+                                  cur_col.inner_text()[:60] if cur_col.count() else ""))
         page.screenshot(path=str(SHOT_DIR / "05-plans.png"), full_page=True)
 
         # ---- TC-UI-02/07 视图⑤ 拓扑 ----
