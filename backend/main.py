@@ -17,6 +17,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from analysis.ml_demand_predict import run_ml_predict
 from analysis.rag_store import run_rag_query
 from analysis.weather_evidence import run_weather_evidence
 from constants import RUN_TYPE
@@ -628,6 +629,31 @@ def api_rag_query(q: str):
     - 查询参数 q 缺失/空白 → 400
     """
     ok, http_status, msg, data = run_rag_query(q)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+# ============================================================
+# 阶段06板块3: ML 需求趋势预测接口 (只新增不改动)
+# - GET /api/ml/demand-trend  基于历史 run 训练轻量逻辑回归,
+#   预测下一窗口需求趋势高低 (trend ∈ up/down)
+# 预测结果仅写入 evidence_v2 (evidence_type 新增 'ml') 作辅助证据,
+# 不参与也不修改 T1~T4 任何判定逻辑 (红线: ML 输出禁止干预 T1)。
+# ============================================================
+
+@app.get("/api/ml/demand-trend")
+def api_ml_demand_trend():
+    """ML 需求趋势预测 (阶段06板块3)。
+
+    - 每次调用: 读取全部历史 run 快照 → 构建相邻窗口样本 →
+      训练逻辑回归 → 输出下一窗口趋势 up/down 与概率
+    - 历史可解析 run 不足 2 个 → model_status='insufficient_data',
+      trend=null (不臆造预测), 结果同样落 evidence_v2
+    - 输出格式约束: trend ∈ {up, down}, probability ∈ [0,1],
+      auxiliary_only 恒为 true; 判定表零读写
+    """
+    ok, http_status, msg, data = run_ml_predict()
     if not ok:
         raise HTTPException(status_code=http_status, detail=msg)
     return data
