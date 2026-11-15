@@ -38,13 +38,19 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402  import 即 init_db() (真实库幂等建表, 启动既有行为)
-from inject_s5_snapshot import CONFIRM_ID, inject_s5  # noqa: E402
+from inject_s5_snapshot import (  # noqa: E402
+    CONFIRM_ID,
+    REFILL_RECEIPT_ID,
+    inject_s5,
+    inject_s5_refill,
+)
 from t1_check import check_t1  # noqa: E402
 from t4_check import check_t4  # noqa: E402
 from t5_check import check_t5  # noqa: E402
 from run_store_v2 import create_run  # noqa: E402
 from task_execute import run_execute_all  # noqa: E402
 from gap_check import run_gap_check  # noqa: E402
+from whatif_run import capture_fingerprint, verify_fingerprint  # noqa: E402
 
 _PASS = 0
 _FAIL = 0
@@ -329,6 +335,63 @@ def main():
     check("TC-08-09 gap_check: P3/L 取证失败不生成 blocker (不武断算缺口)",
           ok and gaps["blocker_count"] == 0,
           "msg=%r blockers=%r" % (msg, (gaps or {}).get("blocker_count")))
+
+    # ================= TC-08-11/12 证据回填复测 (阶段07板块3) =================
+    fp_before = capture_fingerprint(s5_id)
+    ok, st, msg, refill_run = create_run("S5", None)
+    check("TC-08-11a 证据回填: 新建 reality run (不修改旧 run)", ok,
+          "msg=%r" % msg)
+    refill_id = refill_run["run_id"]
+    ok, st, msg, refill = inject_s5_refill(refill_id)
+    check("TC-08-11b 证据回填: 注入 P3/L 合法签收凭证 (status=ok)",
+          ok and refill["receipt_status"] == "ok",
+          "msg=%r" % msg)
+    ok, st, msg, exec_r = run_execute_all(refill_id)
+    check("TC-08-11c 证据回填: 新 run T1~T5 完整执行", ok, "msg=%r" % msg)
+    tasks_r = {t["task_id"]: t["result_status"] for t in exec_r["tasks"]}
+    check("TC-08-11 证据回填: 新 run T1 恢复 established",
+          tasks_r.get("T1") == "established",
+          "tasks=%r" % tasks_r)
+    check("TC-08-12a 证据回填: 新 run T2~T5 均 established (无降级标注)",
+          tasks_r.get("T2") == "established"
+          and tasks_r.get("T3") == "established"
+          and tasks_r.get("T4") == "established"
+          and tasks_r.get("T5") == "established",
+          "tasks=%r" % tasks_r)
+    check("TC-08-12b 证据回填: 新 run T5 无 degraded 降级标注",
+          all("降级置信" not in t["summary_reason"]
+              for t in exec_r["tasks"] if t["task_id"] == "T5"),
+          "T5 reason=%r" % next(
+              t["summary_reason"] for t in exec_r["tasks"]
+              if t["task_id"] == "T5"))
+
+    # 旧 S5 run 完整保留: 六表指纹不变
+    fp_after = capture_fingerprint(s5_id)
+    intact, changed = verify_fingerprint(fp_before, fp_after)
+    check("TC-08-11d 原有 S5 run 完整保留 (六表指纹一致, 不被篡改)",
+          intact, "changed_tables=%r" % changed)
+
+    # evidence_v2: 回填证据 ok + 合法 value_json
+    conn = db.get_conn()
+    try:
+        ev_ok = conn.execute(
+            "SELECT * FROM evidence_v2 WHERE evidence_type='receipt' "
+            "AND source_id=? ORDER BY created_at DESC LIMIT 1",
+            (REFILL_RECEIPT_ID,)).fetchone()
+        ev_unavail = conn.execute(
+            "SELECT * FROM evidence_v2 WHERE evidence_type='receipt' "
+            "AND source_id=? AND status='unavailable' LIMIT 1",
+            (CONFIRM_ID,)).fetchone()
+    finally:
+        db.close_conn(conn)
+    check("TC-08-12c 回填证据写入 evidence_v2 (status=ok, value_json 合法 JSON)",
+          ev_ok is not None and ev_ok["status"] == "ok"
+          and ev_ok["value_json"] is not None
+          and json.loads(ev_ok["value_json"]).get("refill") is True,
+          "got %r" % (dict(ev_ok) if ev_ok else None))
+    check("TC-08-12d 旧取证失败证据 (unavailable, value_json=null) 保留",
+          ev_unavail is not None and ev_unavail["value_json"] is None,
+          "got %r" % (dict(ev_unavail) if ev_unavail else None))
 
     # ---- 清理临时库 ----
     try:
