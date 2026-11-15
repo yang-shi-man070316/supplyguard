@@ -1,0 +1,413 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>SupplyGuard 技术文档 v1.1</title><style>
+@page { size: A4; margin: 18mm 16mm; }
+body { font-family: "Microsoft YaHei", "SimSun", sans-serif; font-size: 10.5pt;
+       line-height: 1.55; color: #222; margin: 0; }
+h1 { font-size: 19pt; text-align: center; color: #1f3b57; margin: 4mm 0 4mm; }
+h1 + p { text-align: center; font-size: 10pt; color: #5a6b7d; }
+h2 { font-size: 14pt; color: #1f3b57; margin: 7mm 0 3mm; padding-bottom: 1.5mm;
+     border-bottom: 1px solid #d5dee8; page-break-after: avoid; }
+h3 { font-size: 11.5pt; color: #2c3e50; margin: 4mm 0 2mm; page-break-after: avoid; }
+p { margin: 2mm 0; text-align: left; }
+table { border-collapse: collapse; width: 100%; margin: 2mm 0 3mm; font-size: 9.5pt; }
+th { background: #eef3f8; color: #1f3b57; text-align: left; }
+th, td { border: 1px solid #c9d4e0; padding: 2.5px 6px; vertical-align: top; }
+tr:nth-child(even) td { background: #f8fafc; }
+tr { page-break-inside: avoid; }
+blockquote { margin: 2mm 0 2mm 4mm; padding: 2mm 3mm; border-left: 3px solid #23405e;
+             background: #f7f9fb; }
+blockquote.figcap { margin: 1mm 0 3mm; padding: 0; border: none; background: none;
+                    text-align: center; font-size: 9.5pt; color: #5a6b7d; }
+pre { font-family: Consolas, monospace; font-size: 8.5pt; white-space: pre-wrap;
+      margin: 2mm 0; padding: 2mm 3mm; background: #f5f7fa;
+      border: 1px solid #dde4ec; border-radius: 3px; }
+code { font-family: Consolas, monospace; font-size: 9.5pt; background: #eef1f5;
+       padding: 0 2px; border-radius: 2px; word-break: break-all; }
+pre code { background: none; padding: 0; }
+img { max-width: 100%; border: 1px solid #d5dee8; }
+hr { border: none; border-top: 1px solid #d5dee8; margin: 4mm 0; }
+li { margin: 1mm 0; }
+</style></head><body><h1>SupplyGuard 应急物资保障系统 技术文档</h1>
+<p><b>参赛者：</b> ＿＿＿杨诗曼＿＿＿ ｜ <b>版本：</b> v1.1 ｜ <b>日期：</b> 2026-11-16</p>
+<h2>摘要</h2>
+<p>SupplyGuard 是面向应急保供指挥的五级保障判定与复核闭环系统：对储备点向服务点的物资投送逐项判定 T1~T5（需求保障/运输可达/响应时效/签收闭环/证据一致性）并落库可追溯，配套缺口识别、调拨方案可行性判定与签收复核闭环。关键设计是"冻结快照＋规则判定＋统一证据层"：判定只读冻结基线，辅助证据异常一律降级、不阻断判定。215 项自动化用例全部通过，全新克隆环境实测 4 分 48 秒完整复现。</p>
+<hr>
+<h2>1. 问题与产品定位</h2>
+<h3>1.1 场景与痛点</h3>
+<table>
+<tr><th>项</th><th>内容</th></tr>
+<tr><td>使用场景</td><td>极端天气应急值守期间（含演练），保供值班员在指挥中心通过工作台查看 R1/R2 储备点向 P1/P2/P3 三个关键服务点投送饮用水/照明/急救包（W/L/R）的保障全局，并处理签收复核</td></tr>
+<tr><td>现有做法</td><td>值班员每 2 小时人工巡检一次仓库库存数字，投送与签收靠电话通知和纸质单据事后核对</td></tr>
+<tr><td>现有做法的代价</td><td>① 看不到"每个服务点的需求到底有没有被保障"的整体判定，只知道仓库还有多少货；② 签收单缺失时无法区分"没送到"与"送到了但没取证"，两类处置完全不同；③ 调拨方案是否可行靠经验估算，超时/运力不足到现场才发现；④ 全部过程无结构化留痕，事后无法追溯"当时为什么这么判"</td></tr>
+<tr><td>你的做法</td><td>以 run 为单元冻结现场快照，T1~T5 逐项规则判定并落库可追溯；缺口定位到（服务点, 物资）组合；三套调拨方案规则判定可行性；签收复核闭环自动生成新 run 复测</td></tr>
+</table>
+<h3>1.2 产品边界</h3>
+<table>
+<tr><th>做什么</th><th><b>不做什么</b></th><th>为什么不做</th></tr>
+<tr><td>T1~T5 五级保障判定，逐任务独立落库可追溯</td><td>不做真实设备的自动控制与自动调度执行</td><td>数据来自模拟器与冻结场景文件，没有真实设备可控制；自动执行的误操作代价高于人工确认</td></tr>
+<tr><td>缺口识别与三套调拨方案可行性判定</td><td>不做任意多套方案的自动寻优</td><td>固定三套方案的规则判定语义明确、可审计；寻优引入的启发式会削弱判定可解释性</td></tr>
+<tr><td>签收复核闭环（待复核单→签收→幂等回执→自动复测）</td><td>不做多用户权限体系</td><td>演练场景为单人值守工作台，权限体系超出范围</td></tr>
+<tr><td>取证失败可信降级（unknown/待验证，禁止"未送达"结论）</td><td>不做基于取证失败的反向推断（如推断物资已丢失）</td><td>证据 unavailable 只说明"取证失败"，不说明"未送达"；反向推断误报代价高于漏报</td></tr>
+<tr><td>reality / what-if 双轨推演，父基线零污染</td><td>不做对历史 run 的修改回写</td><td>历史判定是追溯依据，可修改的历史会让全部结论失去可信度</td></tr>
+</table>
+<h3>1.3 与本项目的差异化</h3>
+<table>
+<tr><th>现有做法</th><th>同类方案的常见问题</th><th>本项目的处理</th></tr>
+<tr><td>人工巡检 + 纸质记录</td><td>只有库存数字，没有"保障成立与否"的逐任务判定</td><td>T1~T5 五级判定逐任务独立落库，每个结论可追溯依赖与证据</td></tr>
+<tr><td>电话/单据事后核对签收</td><td>签收缺失无法区分"未送达"与"未取证"，处置靠猜</td><td>取证失败判 unknown/待验证，全链路禁止输出"未送达"；复核闭环补证后自动复测</td></tr>
+<tr><td>经验估算调拨方案</td><td>方案可行性现场才暴露，超时/运力不足无法提前发现</td><td>库存/车辆/路线三条规则逐条判定，给出可执行/不可执行与逐条原因</td></tr>
+<tr><td>演示数据随手改库</td><td>历史结论无法复现，同一场景两次演示结果不同</td><td>场景文件冻结 + 现场变量显式走 overrides/assumptions + completed 快照触发器不可改</td></tr>
+</table>
+<p>本系统的业务闭环如图 1-1 所示；系统首屏如图 1-2 所示。</p>
+<p style="text-align:center"><img src="file:///e:/supplyguard/tmp_shot_view/_mm13.jpg" style="max-width:80%"></p>
+<blockquote class="figcap"><b>图 1-1</b> SupplyGuard 业务闭环流程（Mermaid 自绘）：主线为"场景/模拟器 → run 快照 → T1~T5 判定 → 缺口 → 方案"；签收复核以新 run 复测回环；红色为取证失败降级分支（unknown/待验证，禁止"未送达"）；绿色虚线为辅助证据旁路（只写 evidence_v2、不参与判定）。</blockquote>
+<p><img src="file:///e:/supplyguard/docs/screenshots/01-overview.png"></p>
+<blockquote class="figcap"><b>图 1-2</b> 系统首屏"保障任务指挥台"（docs/screenshots/01-overview.png）：① 顶部运行（run）选择与 KPI 总览；② T1~T5 五级判定流程条（红=受阻/黄=待验证/绿=成立），显示当前 run 的逐任务通关状态。</blockquote>
+<hr>
+<h2>2. 系统架构与工程约束</h2>
+<h3>2.1 总体架构</h3>
+<p style="text-align:center"><img src="file:///e:/supplyguard/tmp_shot_view/_mm20.jpg" style="max-width:80%"></p>
+<blockquote class="figcap"><b>图 2-1</b> 系统架构图（Mermaid 自绘）：四层主结构 + 辅助证据旁路。橙色（runs 快照不可改）与绿色（evidence_v2 证据层）是人工定义的约束红线；其余模块为 AI 生成初稿、人工审查修订（对应 2.3 节约束表）。</blockquote>
+<p>数据流（与图 2-1 对应）：</p>
+<ol><li><b>采集 → 状态</b>：simulator 通过 MQTT broker 发布库存/需求/运输三类观测，mqtt_client 消费落库（mqtt_client.py:254-261，broker 缺失时降级启动、后台重试）；冻结场景文件经 load_scenario.py 幂等种入观测表并创建 run 快照（scenario_id 白名单校验见 main.py:257-264）。</li><li><b>判定</b>：task_execute 编排 T1~T5 纯判定模块，只读 run 快照，事务原子落库（依赖检查 + 任务结果）；随后缺口识别、候选方案、方案判定依次执行；what-if 推演在父快照副本上叠加假设，对父基线零写入（whatif_run.py:4-10）。</li><li><b>复核闭环</b>：小程序/API 提交签收 → review_store 幂等落库 → 自动生成新 reality run 复测 T1~T5。</li><li><b>展示</b>：console.html 四视图 + Three.js 拓扑视图 + run trace 一路下钻，纯 REST 轮询、30 秒自动刷新（console.html:1230）；阶段01 的 Dashboard.html 保留 WebSocket 实时推送，与工作台相互独立。</li><li><b>辅助证据旁路</b>：天气/RAG/ML/LLM/统计模块只写 evidence_v2，不参与判定结论（llm_explainer.py:6-9）。</li></ol>
+<h3>2.2 技术选型与理由</h3>
+<table>
+<tr><th>选择</th><th>备选方案</th><th>为什么选它</th><th>代价是什么</th></tr>
+<tr><td>FastAPI + uvicorn</td><td>Flask / Django</td><td>原生异步与 WebSocket 支持，Pydantic 请求体校验，接口即文档；与 MQTT 客户端共进程无框架冲突</td><td>无模板引擎与 ORM，页面全静态；Pydantic 模型需手工同步</td></tr>
+<tr><td>SQLite 单文件</td><td>PostgreSQL / MySQL</td><td>单机零部署，克隆即跑，评委环境无需装数据库；事务与触发器（快照不可变）够用</td><td>无多用户并发与多机部署能力；JSON 函数依赖规避（无 JSON1 扩展环境已兼容）</td></tr>
+<tr><td>MQTT（paho-mqtt）</td><td>HTTP 轮询 / 纯 WebSocket 直推</td><td>贴近真实物联网链路，模拟器与后端解耦，多订阅者天然支持</td><td>需额外维护 broker；broker 缺失时实时链路降级、后台重试（实测可用）</td></tr>
+<tr><td>冻结场景 JSON + run 快照</td><td>直接读实时观测表</td><td>判定输入确定化：同一场景任何时刻重放结果一致；what-if 推演在副本上叠加假设</td><td>场景与实时观测需要显式种子机制保持同步</td></tr>
+<tr><td>前端纯静态 HTML + 本地 Three.js</td><td>Vue/React 构建链</td><td>零构建依赖、离线可用，评委浏览器直接打开即完整可用</td><td>无组件化，单文件 console.html 体积大、页面间耦合</td></tr>
+<tr><td>规则判定（非模型判定）</td><td>机器学习判定</td><td>T1~T5 是明确的规则语义，确定性可审计、可回归比对；ML 只作辅助证据</td><td>规则覆盖面有限，无法发现规则未定义的新模式</td></tr>
+</table>
+<h3>2.3 AI 生成代码的约束机制</h3>
+<blockquote>本节回答一个问题：<b>AI 写的代码，我怎么保证它不乱来。</b> 每条约束都可指到具体文件与行号。</blockquote>
+<table>
+<tr><th>约束手段</th><th>具体做法</th><th>在代码哪里能看到</th></tr>
+<tr><td>状态枚举约束</td><td>全部状态枚举（run 状态/任务结果/依赖状态/方案结果）只在 constants.py 定义一次；db.py 建表 CHECK 约束由常量生成，保证"常量定义 = 数据层约束"单一来源，AI 新增状态必须同时过两层</td><td>constants.py:23-32、db.py:36、db.py:163</td></tr>
+<tr><td>数据不可变约束</td><td>completed run 的输入快照/假设快照由数据库触发器强制拒改；历史 run 只增不改，判定错误只能新建 run 复测</td><td>db.py:170-177</td></tr>
+<tr><td>入参白名单校验</td><td>现场变量 overrides 只允许五类列表 + remaining_time + acquisition_status，未知 key 直接抛 ValueError（不静默忽略）；scenario_id 必须落在冻结场景白名单内（白名单从 scenarios/ 目录动态读取，目录缺失回退 S1~S5 硬编码，main.py:41）</td><td>load_scenario.py:210-227、main.py:257-264</td></tr>
+<tr><td>写入边界约束</td><td>辅助证据模块只写 evidence_v2，绝不重新计算或修改判定结论；方案判定模块不触碰 T1~T5 任何状态；what-if 推演对父基线行零写入</td><td>llm_explainer.py:6-9、plan_judge.py:16-19、whatif_run.py:4-10</td></tr>
+<tr><td>失败处理约束</td><td>外部服务（LLM/天气/RAG）失败一律降级 status=unavailable、不阻断判定；MQTT broker 缺失时后端照常启动并后台重试；取证失败判 unknown/待验证，禁止输出"未送达"</td><td>llm_explainer.py:11-18、mqtt_client.py:254-261、t1_check.py:142-143</td></tr>
+<tr><td>基线防污染校验</td><td>what-if 推演前后对父基线 runs/task_results/dependency_checks/blockers/plan_definitions/plan_results 六表做 sha256 指纹比对，覆盖范围缩小也视为不一致</td><td>whatif_run.py:43-51、whatif_run.py:53-73、whatif_run.py:76-91</td></tr>
+<tr><td>人工审查</td><td>判定语义（T1 口径、降级规则、缺口双证据规则）由我定义后交给 AI 实现；涉及状态写入的代码（判定落库、复核事务、快照校准）逐处人工审查；每次 AI 改动必须跑对应回归套件通过才合入</td><td>流程约定，回归脚本见 regression_suite.py、board1_scenario_test.py 等（5.1 节列表）</td></tr>
+</table>
+<p>三处关键约束的代码原文（图 2-3，加粗行为约束生效行）：</p>
+<p><b>（a）快照不可变触发器 — db.py:170-177</b></p>
+<pre>CREATE TRIGGER IF NOT EXISTS trg_runs_completed_snapshot_immutable
+BEFORE UPDATE ON runs
+WHEN OLD.run_status = 'completed'
+ AND (NEW.input_snapshot_json IS NOT OLD.input_snapshot_json
+   OR NEW.assumptions_json IS NOT OLD.assumptions_json)
+BEGIN
+    SELECT RAISE(ABORT, 'runs: completed run snapshot columns are immutable');
+END;</pre>
+<p><b>（b）overrides 入参白名单校验 — load_scenario.py:210-227（节选）</b></p>
+<pre>for key, value in overrides.items():
+    if key == "remaining_time":
+        if isinstance(value, bool) or not isinstance(value, int) \
+                or value &lt; 0:
+            raise ValueError(
+                "override remaining_time must be a non-negative integer")
+        out[key] = value
+        continue
+    if key == "acquisition_status":
+        _apply_acquisition_status(out, value)
+        continue
+    if key not in _NATURAL_KEYS:
+        raise ValueError(
+            "unsupported override key %r (expected %s / remaining_time "
+            "/ acquisition_status)"
+            % (key, "/".join(sorted(_NATURAL_KEYS))))</pre>
+<p><b>（c）方案判定的业务红线与取证失败降级语义 — plan_judge.py:16-19、t1_check.py:142-143</b></p>
+<pre># 业务红线 (文档第7步强制要求):
+# 本模块绝不修改 T1 状态——不触碰 task_results / dependency_checks /
+# runs.run_status; 判定为 executable 只代表方案可行, 不解除 T1 阻塞</pre>
+<pre># 取证失败 ≠ 未收到: 有更早有效回执则沿用判定, 否则判 unknown
+# (绝不输出未收到/NOT_RECEIVED 确定结论)。</pre>
+<blockquote class="figcap"><b>图 2-3</b> 关键约束代码片段（加粗行为约束生效行）：(a) 数据层触发器强制快照不可变；(b) 现场变量白名单校验，未知 key 抛错不静默忽略；(c) 方案判定不触碰 T1 状态、取证失败禁止输出"未送达"。全部片段均出自当前仓库文件，行号与文件一一对应。</blockquote>
+<hr>
+<h2>3. 意图控制：我如何驾驭 AI</h2>
+<p><b>页数预算：6 页｜服务评分项：方法创新性与意图控制（20%）</b></p>
+<p>本章三个案例全部来自真实开发过程，原始对话截图与完整记录归档于 <code>02_AI对话快照/</code>（各案例 <code>99-完整对话记录.pdf</code> 为全文导出，附录 A 给出对应关系）。每个案例按"我的要求 → AI 第一版 → 我发现的问题 → 我的纠偏 → 验证结果"五段如实记录，包括 AI 做对的部分。</p>
+<h3>3.1 我的 AI 协作方法（1 页）</h3>
+<table>
+<tr><th>环节</th><th>我的做法</th><th>为什么这么做</th></tr>
+<tr><td>需求拆解</td><td>拆成"独立边界候选任务"：任务目标、编号业务要求、文件白名单、自测清单、交付物清单</td><td>拆细丢上下文、拆粗自由发挥；白名单是硬边界</td></tr>
+<tr><td>上下文供给</td><td>给字段清单、表结构、既有函数口径、报错原文、复现命令、文件路径</td><td>不给上下文它会编造接口字段；topic 规格缺失时 AI 自定，我要求写进交付说明</td></tr>
+<tr><td>结果审查</td><td>双层：AI 自测业务功能；我做人工代码评审 + 故障注入实测。黑盒全绿不算数</td><td>AI 自测只覆盖它清单里的用例；案例一 8 项全过但三处隐患，案例三正向全过但失联即崩</td></tr>
+<tr><td>纠偏方式</td><td>写事实（输入→错误→为何不能接受）+ 逐条修复要求 + 禁止事项；修复后把专项用例写进测试文档</td><td>只写"有问题"会修错地方；不给禁止项会用复用函数掩盖报错（案例二教训）</td></tr>
+</table>
+<h3>3.2 案例一：分页接口黑盒全绿，人工评审挖出三处线上隐患（2026-11-11）</h3>
+<p><b>① 我的要求（原始提问）</b></p>
+<blockquote>执行独立边界候选任务【runs列表分页查询接口】，只完成本任务，禁止提前实现其他调度功能。<br>任务目标：实现分页查询接口 GET /api/runs/paginated，支持 page、page_size，返回 {total, page, page_size, list}。业务要求：入参必填并做合法性校验；offset=(page-1)*page_size；超页返回空 list 不抛异常；老接口 GET /api/runs 等全部保留不动。<br>硬性保护约束：仅允许改动 run_store.py 增加分页查询函数、main.py 新增接口，其他文件一律不动。<br>自测验证清单：正常分页核对条数、非法参数报错、超页不报错、老接口行为不变、回归全部老接口。</blockquote>
+<p>（完整原文与截图见图 3-1。）</p>
+<p><b>② AI 第一次给的方案</b></p>
+<p>AI 动手前先指出矛盾：任务要求 is_deleted=0 过滤，但软删除已被我回滚，提问确认后按"不带 is_deleted 过滤"实现——这个提问环节是对的。交付 <code>list_runs_paginated()</code>：COUNT + LIMIT/OFFSET 取页，排序 <code>ORDER BY created_at</code>、无第二排序键；自跑 8 项 curl 用例全部通过。提交 89903d4。</p>
+<p><b>③ 我发现的问题</b></p>
+<p>黑盒全绿后，我做人工代码评审，发现三处单线程 curl 测不出来的隐患：</p>
+<table>
+<tr><th>#</th><th>输入</th><th>错误表现</th><th>为什么不能接受</th></tr>
+<tr><td>1</td><td>并发下分页查询的同时有新 run 写入</td><td>total 的 COUNT 与 list 查询是两条独立 SQL，两次查询之间数据变化，total 与 list 错位</td><td>分页总数和条目对不上</td></tr>
+<tr><td>2</td><td>page_size=10000</td><td>参数只校验 ≥1、无上限，一次性读取大量行，慢查询</td><td>恶意大 page_size 可打满数据库</td></tr>
+<tr><td>3</td><td>多条记录 created_at 完全相同</td><td>排序只有 created_at、无唯一键兜底，翻页出现条目重复或丢失</td><td>数据库排序不稳定，跨页结果不可信</td></tr>
+</table>
+<p>判据：三处都不是业务功能错误，AI 自测清单里没有这些用例——黑盒测试与人工评审覆盖的不是同一层问题。</p>
+<p><b>④ 我的纠偏</b></p>
+<p>下发第二个独立任务【分页接口加固】：</p>
+<blockquote>任务目标：1. page_size 增加上限：最大允许 50，超值自动钳位到 50，不报错；2. 查询结果必须按 created_at DESC 倒序返回。<br>核心业务红线（重点）：易错坑 1：忘记限制 page_size，超大 page_size 直接全量拉取；易错坑 2：排序方向写反，变成 created_at 正序；原有返回结构（total、page、page_size、list）不能改动；只修改 run_store.py 的分页查询逻辑。</blockquote>
+<p>差异：第一版只要求"合法校验 + 分页公式"，加固版把"防护上限"与"排序稳定性"写成必做项，并把我预判的两个易错坑直接列成红线。</p>
+<p><b>⑤ 验证结果</b></p>
+<p>修复后实测（55 条数据）：page_size=10000 → 实际 page_size=50、total=55；page=1&amp;size=3 → 最新 3 条在前；两页拼接等于完整倒序；老接口回归全 200。提交 0b0cd45（11-12）。对比见图 3-2，两次提交见图 3-3。</p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/01_runs分页_黑盒测试通过但存在隐性工程隐患/01-我的原始提问a.png"></p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/01_runs分页_黑盒测试通过但存在隐性工程隐患/01-我的原始提问b.png"></p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/01_runs分页_黑盒测试通过但存在隐性工程隐患/01-我的原始提问c.png"></p>
+<blockquote class="figcap"><b>图 3-1</b> 案例一原始提问截图（02_AI对话快照/01_runs分页…/01-我的原始提问a-c.png）：独立任务指令全文，含业务要求、硬性保护约束、自测清单。</blockquote>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/01_runs分页_黑盒测试通过但存在隐性工程隐患/改前_超大page_size（1）.png"></p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/01_runs分页_黑盒测试通过但存在隐性工程隐患/改后_超大page_size.png"></p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/01_runs分页_黑盒测试通过但存在隐性工程隐患/改前_分页排序（1）.png"></p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/01_runs分页_黑盒测试通过但存在隐性工程隐患/改后_分页排序.png"></p>
+<blockquote class="figcap"><b>图 3-2</b> 案例一改前/改后对比（左列改前、右列改后）：改前 page_size=10000 全量返回、排序无兜底；改后钳位到 50、created_at DESC + rowid DESC。</blockquote>
+<pre>89903d4 (11-11) feat: runs分页查询接口，基础分页逻辑（存在并发、性能、排序隐性隐患）
+0b0cd45 (11-12) fix: 分页接口加固 (page_size上限50 + created_at倒序)</pre>
+<blockquote class="figcap"><b>图 3-3</b> 案例一两次提交（<code>git log --oneline</code>）：89903d4 为 AI 第一版，0b0cd45 为纠偏后修复。</blockquote>
+<h3>3.3 案例二：MQTT 主题路由分发错误——"只写调用、缺失实现"（2026-11-14）</h3>
+<p><b>① 我的要求（原始提问）</b></p>
+<blockquote>选择：新建 receipt_records_v2。补充要求：1. 新表：id 自增主键，receipt_id 作业务字段加唯一约束，收到消息先查重、存在跳过 INSERT（字段清单 8 项）；2. GET /api/history/receipts 改读 receipt_records_v2，对外 url、筛选参数、返回结构不变；3. 旧表原样保留；4. dispatch_records 按原定规格新建。</blockquote>
+<p>（完整原文与截图见图 3-4。）</p>
+<p><b>② AI 第一次给的方案</b></p>
+<p>AI 建两表、写 _persist_dispatch / _persist_receipt 落库函数与 topic 路由、加两个历史查询接口，自测 9 项全部通过。伏笔：topic 规格我未给，AI 自定 nova/bb03/dispatch/+ 与 nova/bb03/receipt/+，并在交付说明声明"模拟器需按此发布"。</p>
+<p><b>③ 我发现的问题</b></p>
+<p>自测全绿后，我用 MQTTX 发标准 receipt 报文（receipt_id=RC-001，不含 from_reserve_id）验收：/api/history/receipts 返回 HTTP 200、空数组 []。查日志定位：第一版代码 receipt 分支调用 _persist_receipt，但该函数完全未实现，运行抛 NameError；uvicorn 热重载的内存中间态下 receipt 报文被错误路由到 _persist_dispatch，读不存在的 from_reserve_id 抛 KeyError；HTTP 200 + 空数组 = 入库静默失败，且该错误仅存在于内存态、磁盘查不到。</p>
+<p>判据：状态码正常、无报错提示，比 500 更危险——只能靠后端日志定位。</p>
+<p><b>④ 我的纠偏</b></p>
+<blockquote>mqtt_client.py 当前存在两处缺陷：1. receipt 分支调用了 _persist_receipt，但代码里完全没有实现这个函数，运行抛 NameError。2. 不要用替换成 _persist_dispatch 的方式掩盖报错；receipt 报文传入 _persist_dispatch 会读取不存在的 from_reserve_id，产生 KeyError。<br>修改要求：1. 新增独立异步函数 _persist_receipt_v2 处理 receipt 主题，写入 receipt_records_v2；2. 主题严格分发：dispatch/* → _persist_dispatch，receipt/* → _persist_receipt_v2；3. 字段严格遵守阶段 02 文档；4. 重复 receipt_id 直接跳过、禁止覆盖旧记录；5. 已经正常工作的 dispatch 全部代码与接口，一点都不要改动。</blockquote>
+<p>（完整指令截图见图 3-4。）指令差异：第 2 条"不要用替换成 _persist_dispatch 的方式掩盖报错"是提前写死的禁止项，第 5 条把"不许动什么"设为硬约束——两句禁止项比十条正面要求更关键。</p>
+<p><b>⑤ 验证结果</b></p>
+<p>AI 核查磁盘后回复"当前磁盘版本已无此缺陷（应为编辑中间态）"——与日志实测一致，但按要求完成改名与边界收敛；并纠正我指令中"异步函数"的技术错误（on_message 无法 await，应写同步函数），我按其解释接受。实测：同 receipt 发 2 次仅 1 行（去重生效）；dispatch 回归正常；编译通过。提交 c073891。对比见图 3-5。</p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/02_receipt_v2%20MQTT主题路由分发错误/01-我的原始提问a.png"></p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/02_receipt_v2%20MQTT主题路由分发错误/04-我的纠偏指令a.png"></p>
+<blockquote class="figcap"><b>图 3-4</b> 案例二原始提问与纠偏指令截图（02_AI对话快照/02_receipt_v2 MQTT主题路由分发错误/01-我的原始提问a.png、04-我的纠偏指令a.png）：上为新建表与接口要求，下为点名两处缺陷 + 五条修复要求（含禁止项）。</blockquote>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/02_receipt_v2%20MQTT主题路由分发错误/05-验证结果-改前.png"></p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/02_receipt_v2%20MQTT主题路由分发错误/05-验证结果-改后.png"></p>
+<blockquote class="figcap"><b>图 3-5</b> 案例二改前/改后对比：改前后端日志 KeyError: 'from_reserve_id'、接口 200 空数组；改后 receipt 正常落库、查询返回记录。</blockquote>
+<pre>c073891 (11-14) feat: 新增独立 _persist_receipt_v2 实现receipt分页落库，topic路由隔离，支持receipt_id去重；不改动原有dispatch逻辑</pre>
+<blockquote class="figcap"><b>图 3-6</b> 案例二修复提交（<code>git log --oneline</code>）：c073891，topic 路由隔离 + receipt_id 去重，dispatch 逻辑零改动。</blockquote>
+<h3>3.4 案例三：降级分支返回契约不一致引发 KeyError 崩溃（2026-11-15）</h3>
+<p><b>① 我的要求（原始提问）</b></p>
+<p>板块 06-4 大任务，7 条工作指令，节选与本案直接相关的两条：</p>
+<blockquote>【板块目标】…5. 失效降级专项：分别让 weather/RAG/ML/LLM 组件故障，验证标记 unavailable，T1-T4 不受影响，报告标注异常…<br>【工作指令】…3. 编写 analysis/llm_explainer.py，严格执行"先计算，再解释"流程…大模型仅做结果解读，不修改原有业务判定。…5. 完成组件失效降级专项测试…</blockquote>
+<p>（完整原文与截图见图 3-7。）注意：指令要求了"组件故障要降级"，没写"所有失败分支返回结构必须统一"——这个缺口就是本案例的根因。</p>
+<p><b>② AI 第一次给的方案</b></p>
+<p>AI 交付 8 个文件（ai_tools.py 234 行、llm_explainer.py 371 行、report_builder.py 308 行等），并明确声明"仅语法编译检查、未做功能验证、没有伪造实测输出"——诚实，我接受。隐患在 _remote_explain 的 docstring：返回契约写 {"status":"ok","explanation":text} 或 {"status":"unavailable","error_message":reason}——两个分支键不同，而下游统一读 result["explanation"]。</p>
+<p><b>③ 我发现的问题</b></p>
+<p>我做故障注入实测（正是 AI 声明未做的那部分）：<code>SUPPLYGUARD_LLM_URL</code> 指向不可达地址执行 llm_explainer → _remote_explain 失败分支缺 explanation 键，下游读 result["explanation"] 抛 KeyError 崩溃、llm 证据无法落库、/api/reports 返回 500。对照：开关关闭路径（同样降级）返回带 explanation: None，正常不崩。</p>
+<p>判据：两条语义相同的降级路径一条崩一条不崩——只测开关关闭发现不了，必须构造真实网络失联。</p>
+<p><b>④ 我的纠偏</b></p>
+<blockquote>我实测复现了 LLM 解释模块降级不一致问题：…修复要求：1. 修改 _remote_explain 失败分支的返回字典，强制加上 "explanation": None，保证所有降级分支返回结构完全统一。2. 远程 LLM 调用失败时保持 status=unavailable，正常写入 evidence_v2 的 llm 证据记录，进程不崩溃、报告接口正常返回降级结果。3. 在 LLM/报告测试文档新增 TC，专项校验远程 LLM 不可达分支返回字段完整性。</blockquote>
+<p>（完整指令截图见图 3-9。）指令差异：从"组件故障要降级"（行为描述）升级为"所有降级分支返回四键齐全"（契约约束），并要求把专项用例写进测试文档防回归。</p>
+<p><b>⑤ 验证结果</b></p>
+<p>修复后实测：远程不可达 → status=unavailable、explanation=null、error_message 非空，证据正常落库；/api/reports 远程失联下正常返回；判定隔离 runs/task_results/dependency_checks 零变化（10/24/120）。提交 7eba0a3。对比见图 3-8。</p>
+<p>另外如实记录：验证中 AI 自行发现 API 返回体缺 error_message 键，主动补齐并新增 D4B 检查项——"契约统一"的标准让它继续自查出第二个缺口，正是纠偏指令想要的效果。</p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/03_LLM远程调用失败分支返回契约不一致引发KeyError崩溃/01-我的原始提问a.png"></p>
+<blockquote class="figcap"><b>图 3-7</b> 案例三原始提问截图（02_AI对话快照/03_LLM远程调用失败分支返回契约不一致引发KeyError崩溃/01-我的原始提问a.png）：板块 06-4 任务指令，含失效降级专项要求。</blockquote>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/03_LLM远程调用失败分支返回契约不一致引发KeyError崩溃/05-验证结果改前-1.png"></p>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/03_LLM远程调用失败分支返回契约不一致引发KeyError崩溃/05-验证结果改后-1.png"></p>
+<blockquote class="figcap"><b>图 3-8</b> 案例三改前/改后对比：改前远程不可达抛 KeyError: 'explanation' 崩溃；改后 status=unavailable、explanation=null，证据正常落库。</blockquote>
+<p><img src="file:///e:/supplyguard/技术文档/02_AI对话快照/03_LLM远程调用失败分支返回契约不一致引发KeyError崩溃/04-我的纠偏指令.png"></p>
+<blockquote class="figcap"><b>图 3-9</b> 案例三纠偏指令截图（04-我的纠偏指令.png）：实测复现描述 + 三条修复要求（统一返回契约、落证据不崩溃、新增专项 TC）。</blockquote>
+<pre>7eba0a3 (11-15) feat+fix(06-4): 在已有双模式LLM解释、开关降级基础上修复三处边界缺陷；统一远程服务失联降级返回契约，增加空对象守卫、补齐sqlite3导入；保障报告接口稳定性与工具调用轨迹完整性</pre>
+<blockquote class="figcap"><b>图 3-10</b> 案例三修复提交（<code>git log --oneline</code>）：7eba0a3，统一远程服务失联降级返回契约（本案例为其中一处边界缺陷）。</blockquote>
+<p><b>本章证据自检：</b></p>
+<ul><li>[x] 三个案例都有"我发现的问题"段，且问题具体到输入输出（3.2 三处隐患表、3.3 日志 KeyError、3.4 注入命令与崩溃堆栈）</li><li>[x] 三个案例都有修改前后的指令对比（3.2 原任务 vs 加固任务红线、3.3 提前写死的禁止项、3.4 行为描述 → 契约约束）</li><li>[x] 每个案例能指到对应 Commit（89903d4→0b0cd45、c073891、7eba0a3）</li><li>[x] 有原始对话截图（图 3-1、3-4、3-7、3-9 为对话记录导出截图；完整对话全文见 02_AI对话快照/ 各案例 99-完整对话记录.pdf）</li></ul>
+<hr>
+<h2>4. 可复现性论证</h2>
+<h3>4.1 复现路径</h3>
+<p>完整步骤见 delivery/README.md 第 3 节与 test/03_README.md 第 3 节（路线 A 完整模式 / 路线 B 最小可跑模式）。主干如下：</p>
+<pre># 1. 获取代码并安装依赖（国内网络慢时加阿里云镜像）
+git clone &lt;repo-url&gt; supplyguard &amp;&amp; cd supplyguard
+pip install -r requirements.txt
+# 2. 启动后端（无需 .env、无需数据库预装，启动自动建表）
+cd backend
+uvicorn main:app --port 8000
+# 3. 另开终端重放冻结场景（不依赖任何外部服务）
+python scenarios/load_scenario.py S3 --full
+# 4. 浏览器打开 http://127.0.0.1:8000/console/ 查看四视图与拓扑
+# （可选）启动 mosquitto 后运行 python simulator/simulator.py --interval 5 接入实时链路</pre>
+<p>回归验证命令（评测可选，全部临时库/干净库隔离，不污染正式库）：</p>
+<pre>cd backend
+python regression_suite.py                    # 板块二：正向 5 + 失败回归 11
+python board1_scenario_test.py                # 板块一：场景冻结 + run_trace（63 项）
+python whatif_run_test.py                     # 阶段07：S4 what-if + 六表指纹（46 项）
+python s5_degrade_test.py                     # 阶段07：S5 降级 + 证据回填（33 项）
+python e2e_boot_test.py                       # 清空环境端到端自举（8 项）
+python e2e_clone_test.py                      # 临时 bare 仓库克隆验收（15 项）
+# 前端回归（需先启动后端，且在干净库上预置 run 序列 RUN-001~016）
+python prepare_frontend_test_data.py http://127.0.0.1:8000
+python board1_frontend_test.py http://127.0.0.1:8000</pre>
+<h3>4.2 实测记录</h3>
+<table>
+<tr><th>项</th><th>内容</th></tr>
+<tr><td>测试机器</td><td>12th Gen Intel Core i7-1260P / 32GB 内存 / Windows 11 Home 10.0.22000 / Python 3.8.10</td></tr>
+<tr><td>是否首次安装</td><td>是：GitHub 全新克隆 + 全新 venv，从未安装过本项目（实测时间 2026-11-15 23:17:42 ~ 23:22:30）</td></tr>
+<tr><td>总耗时</td><td>4 分 48 秒，10 分钟内完成（逐步计时见下表）</td></tr>
+<tr><td>失败与修复</td><td>① 默认 PyPI 源当日超时（11 分 46 秒未完成安装）→ 改用阿里云镜像，缓存命中 22.8 秒、无缓存首装 2 分 18 秒；② 实测机 8000 端口被开发实例占用 → 实测改用 8124 端口，README 命令本身不变；③ 无 broker / 无 .env 的最小模式（路线 B）单独实测：后端降级启动、场景判定完整可用</td></tr>
+</table>
+<p><b>表 4-1 分步计时（实测原文见 test/10min-test.md，2026-11-15 晚）</b></p>
+<table>
+<tr><th>#</th><th>步骤</th><th>命令</th><th>开始-结束</th><th>耗时</th><th>结果</th></tr>
+<tr><td>1</td><td>克隆仓库</td><td><code>git clone https://github.com/yang-shi-man070316/supplyguard.git</code></td><td>23:17:42-23:20:39</td><td>2 分 57 秒</td><td>15MB（含 8 张截图）</td></tr>
+<tr><td>2</td><td>建虚拟环境</td><td><code>python -m venv sgvenv</code></td><td>23:20:51-23:20:54</td><td>3.3 秒</td><td>创建成功</td></tr>
+<tr><td>3</td><td>安装依赖</td><td><code>pip install -i https://mirrors.aliyun.com/pypi/simple -r requirements.txt</code></td><td>23:20:54-23:21:17</td><td>22.8 秒</td><td>fastapi 0.124.4 / uvicorn 0.33.0 / paho-mqtt 2.1.0 / pandas 2.0.3</td></tr>
+<tr><td>4</td><td>启动后端</td><td><code>uvicorn main:app --host 0.0.0.0 --port 8124</code></td><td>23:21:54-23:22:02</td><td>8 秒</td><td>/health 200</td></tr>
+<tr><td>5</td><td>场景判定 S3</td><td><code>python scenarios/load_scenario.py S3 --full</code></td><td>23:22:14</td><td>0.16 秒</td><td>T1 blocked、T2~T5 established、PLAN-A 可执行</td></tr>
+<tr><td>6</td><td>run trace</td><td><code>GET /api/runs/BB03-RUN-001/trace</code></td><td>23:22:15</td><td>&lt;1 秒</td><td>与步骤 5 一致</td></tr>
+<tr><td>7</td><td>场景判定 S5</td><td><code>python scenarios/load_scenario.py S5 --full</code></td><td>23:22:20</td><td>0.13 秒</td><td>T1 unknown、T4 待验证、无 blocker</td></tr>
+<tr><td>8</td><td>天气证据</td><td><code>GET /api/weather</code></td><td>23:22:23</td><td>约 1 秒</td><td>wttr.in 实时返回</td></tr>
+<tr><td>9</td><td>实时链路</td><td><code>python simulator/simulator.py --rounds 3 --interval 2</code></td><td>23:22:25-23:22:29</td><td>6 秒</td><td>/state 有 6 库存/9 需求/2 运输</td></tr>
+<tr><td>10</td><td>前端页面</td><td><code>GET /console/</code></td><td>23:22:02</td><td>&lt;1 秒</td><td>HTTP 200（页面渲染由 board1_frontend_test.py 34/34 覆盖）</td></tr>
+</table>
+<p>同一仓库提交的自动化清空环境自举实测于 2026-11-16 复跑，输出如图 4-1 所示（终端原文，8/8 通过）。</p>
+<pre>[PASS] E2E-01a 清空环境副本创建 (无数据库文件)
+[PASS] E2E-01b 空环境 uvicorn 启动 (/health 200)
+[PASS] E2E-01c 全新空库 run 列表为空
+[PASS] E2E-01d load_scenario.py S3 --full 执行成功
+[PASS] E2E-01e /api/runs 出现 BB03-RUN-001 (S3, completed)
+[PASS] E2E-01f trace: T1 blocked + PLAN-A 可执行
+[PASS] E2E-01g /console/ 前端工作台可访问
+[PASS] E2E-01h S5 --full → BB03-RUN-002 降级语义 (T1 unknown, T4 pending_verification)</pre>
+<blockquote class="figcap"><b>图 4-1</b> 清空环境端到端自举实测输出（backend/e2e_boot_test.py，2026-11-16 复跑）：在无任何数据库文件的代码副本上从零拉起 uvicorn、按 README 命令加载 S3/S5、逐项验证 REST 与 trace，8/8 通过。</blockquote>
+<h3>4.3 结果的确定性说明</h3>
+<p>固定输入与规则版本下，结构化判定结论与预期一致；LLM 生成的解释文字允许措辞变化，本文只核验其是否覆盖判定结论的关键要素。</p>
+<table>
+<tr><th>部分</th><th>是否必须一致</th><th>怎么保证</th><th>允许变动的范围</th></tr>
+<tr><td>数据输入</td><td>一致</td><td>场景文件 S1~S5 冻结于仓库（版本 f2208c8）；现场变量只允许走 input_overrides / assumptions 显式入参；completed 快照由触发器拒改（db.py:170-177）</td><td>无</td></tr>
+<tr><td>规则判定结果（T1~T5 / 缺口 / 方案）</td><td>一致</td><td>规则阈值全部写在场景 JSON 与 constants.py，版本固定；判定模块只读快照、不读实时表</td><td>无</td></tr>
+<tr><td>what-if 父基线</td><td>一致</td><td>推演前后六表 sha256 指纹比对（whatif_run.py:43-51）</td><td>无</td></tr>
+<tr><td>LLM 文字解释</td><td>不一致</td><td>不做逐字比对，只核验是否明确列出判定结论与关键要素（远程不可用时降级为本地模板，llm_explainer.py:11-18）</td><td>措辞可不同，结论要素必须齐全</td></tr>
+<tr><td>ML 趋势预测</td><td>辅助证据</td><td>只写 evidence_v2，不参与 T1~T5 判定</td><td>数值允许浮动，不影响判定结论</td></tr>
+</table>
+<p><b>边界声明</b>：以上"一致"指"在固定输入与当前规则版本下，多次运行结果与预期一致"，由 215 项回归用例逐项比对验证；本节不声称超出验证范围的任何性质（如数据泄漏类结论不属于本项目验证范围）。</p>
+<h3>4.4 数据与资源清单</h3>
+<table>
+<tr><th>资源</th><th>是否随包提供</th><th>路径</th><th>没有怎么办</th></tr>
+<tr><td>冻结场景 S1~S5</td><td>是</td><td>scenarios/s1.json ~ s5.json</td><td>—</td></tr>
+<tr><td>回归测试与用例清单</td><td>是</td><td>backend/regression_suite.py 等，delivery/REGRESSION_CASES.md</td><td>—</td></tr>
+<tr><td>演示脚本（成功/失败两套）</td><td>是</td><td>delivery/demo/demo_success.md、demo_failure.md</td><td>—</td></tr>
+<tr><td>演示截图</td><td>是</td><td>docs/screenshots/（8 张）</td><td>—</td></tr>
+<tr><td>数据库</td><td>否（启动自动建表）</td><td>backend/bb03.db 由 init_db 幂等生成</td><td>无需任何操作；演示复位可用 <code>load_scenario.py --reset-observations</code></td></tr>
+<tr><td>MQTT broker</td><td>否（可选）</td><td>mosquitto，默认 127.0.0.1:1883</td><td>不装可跑路线 B：实时链路降级，判定/前端完整可用（已实测）</td></tr>
+<tr><td>远程 LLM</td><td>否（可选）</td><td>环境变量 SUPPLYGUARD_LLM_*</td><td>不配置走本地确定性模板解释（已实测）</td></tr>
+<tr><td>微信开发者工具</td><td>否</td><td>小程序两页面代码随包</td><td>安装开发者工具后可验证实机运行（当前状态：代码完成 + 后端契约实测，未实机）</td></tr>
+<tr><td>天气服务</td><td>否（外网 wttr.in）</td><td>analysis/weather_evidence.py</td><td>无外网自动降级 status=unavailable（已实测）</td></tr>
+</table>
+<hr>
+<h2>5. 验证与效果</h2>
+<h3>5.1 验证场景表</h3>
+<blockquote>215 项自动化用例的构成：板块一场景与 trace 63 + 板块二正向/失败 16 + 阶段07 79（whatif 46 + s5 33）+ 前端 34 + E2E 克隆 15 + 空环境自举 8。</blockquote>
+<table>
+<tr><th>场景</th><th>输入</th><th>预期结果</th><th>实际结果</th><th>状态</th><th>证据</th></tr>
+<tr><td>S1 现场补签收</td><td>S1 基线 + overrides 追加 8 条现场签收 → <code>--full</code></td><td>T1 由 blocked 转 established，T1~T5 全成立，无 blocker</td><td>与预期一致</td><td>通过</td><td>REG-01（BB03-RUN-001）</td></tr>
+<tr><td>S2 缺口识别</td><td><code>load_scenario.py S2 --full</code></td><td>T1 blocked（8/9 依赖不满足）；blockers 恰为 P1/W gap=2、P2/L gap=3；无签收的组合不武断算缺口</td><td>与预期一致</td><td>通过</td><td>REG-02（BB03-RUN-002）</td></tr>
+<tr><td>S3 候选方案判定</td><td><code>load_scenario.py S3 --full</code>（V2 FAULT、路线 A/B 20min、C 40min、时限 30min）</td><td>T1 blocked（签收 3&lt;需求 7）；PLAN-A 可执行，PLAN-B/C 不可执行</td><td>与预期一致</td><td>通过</td><td>REG-03（BB03-RUN-003）、图 5-1</td></tr>
+<tr><td>S4 what-if 推演</td><td>S4 三组标准假设（修车/放宽时限/削减库存），父基线 RUN-003</td><td>推演 A：PLAN-B 转可执行；推演 B：PLAN-C 可执行；推演 C：全部不可执行；父基线六表指纹推演前后一致</td><td>与预期一致</td><td>通过</td><td>REG-04（RUN-004/005/006）、whatif_run_test.py 46/46</td></tr>
+<tr><td>S5 取证失败降级</td><td><code>load_scenario.py S5 --full</code></td><td>T1 unknown、T4 待验证、T2/T3/T5 established；无 blocker；全链路无"未送达"输出</td><td>与预期一致</td><td>通过</td><td>REG-05（BB03-RUN-007）、图 5-2</td></tr>
+<tr><td>S5 证据回填复测</td><td><code>load_scenario.py S5 --variant refill --full</code></td><td>补合法签收 8 件后 T1 恢复 established；旧 run 判定不被改动</td><td>与预期一致</td><td>通过</td><td>s5_degrade_test.py 33/33</td></tr>
+<tr><td>板块一场景与 trace 回归</td><td>board1_scenario_test.py（临时库隔离，真实库只读）</td><td>S1~S5 冻结基线重放、overrides 非法入参抛错、run_trace 链路齐全、历史一致性只读比对</td><td>与预期一致</td><td>通过</td><td>board1_scenario_test.py 63/63</td></tr>
+<tr><td>前端四视图 + 拓扑 + 下钻</td><td>干净库 + prepare_frontend_test_data.py 预置 RUN-001~016（RUN-007 pending / RUN-009~010 / RUN-011 / RUN-016）</td><td>四视图渲染、拓扑状态色、trace 下钻全部正确</td><td>与预期一致</td><td>通过</td><td>board1_frontend_test.py 34/34</td></tr>
+<tr><td>E2E 克隆验收</td><td>临时 bare 仓库全新 clone（无 bb03.db），按 delivery/README.md 复现成功/失败两套演示脚本</td><td>成功演示 RUN-001~004、失败演示 RUN-005~006 全部达到脚本预期</td><td>与预期一致</td><td>通过</td><td>e2e_clone_test.py 15/15</td></tr>
+<tr><td>异常注入（4 类）</td><td>DB 不可打开 / 取证失败注入 / LLM·天气·RAG 故障 / 进程重启</td><td>结构化降级、不崩溃、既定降级语义、重启数据完整</td><td>与预期一致</td><td>通过</td><td>FR-01~FR-04（11 项），见 5.3 节</td></tr>
+<tr><td>小程序实机运行</td><td>微信开发者工具打开两页面</td><td>待复核列表/签收表单可用</td><td>未在实机运行</td><td>未验证</td><td>开发机未装开发者工具；后端契约已实测</td></tr>
+<tr><td>第二台全新机器复现</td><td>按 README 全流程</td><td>同机冷启动 4 分 48 秒已实测；异机未测</td><td>未验证</td><td>未验证</td><td>e2e_clone_test.py 15/15 与 e2e_boot_test.py 8/8 为替代验证</td></tr>
+</table>
+<h3>5.2 性能与资源</h3>
+<table>
+<tr><th>指标</th><th>数值</th><th>测试条件</th><th>备注</th></tr>
+<tr><td>S3 场景全链路重放（建 run + T1~T5 + 缺口 + 方案 + 判定）</td><td>0.15~0.16 秒</td><td>i7-1260P / 32GB / Win11，本地 SQLite</td><td>两次实测一致</td></tr>
+<tr><td>S5 场景全链路重放</td><td>0.13 秒</td><td>同上</td><td>10min-test 实测</td></tr>
+<tr><td>后端冷启动</td><td>约 2 秒（到 banner）</td><td>同上</td><td>含 init_db 幂等建表</td></tr>
+<tr><td>run trace 接口</td><td>&lt;1 秒</td><td>同上</td><td>GET /api/runs/{id}/trace</td></tr>
+<tr><td>依赖安装</td><td>22.8 秒（缓存命中）/ 2 分 18 秒（无缓存首装）</td><td>阿里云镜像</td><td>默认 PyPI 源当日超时</td></tr>
+<tr><td>内存 / CPU 占用</td><td>未实测</td><td>—</td><td>未做独立性能压测，以上为功能级计时</td></tr>
+</table>
+<h3>5.3 异常与降级验证</h3>
+<blockquote>说明：下表每条异常都在<b>普通模式下手工制造</b>（不借助场景注入），确认系统正确捕获后才归纳成回归用例；S5 场景注入单独验证组合表现。两条链路都跑过，见 delivery/REGRESSION_CASES.md 失败回归部分。</blockquote>
+<table>
+<tr><th>异常类型</th><th>怎么制造</th><th>系统表现</th><th>是否影响主流程</th></tr>
+<tr><td>MQTT broker 不可用</td><td>不启动 mosquitto 直接启动后端</td><td>日志出现"MQTT broker 不可达…将后台重试"；/health 与 console 均 200；场景判定完整产出；实时数据区为空不白屏</td><td>否（实时链路降级）</td></tr>
+<tr><td>LLM 服务不可用</td><td><code>SUPPLYGUARD_LLM_DISABLED=1</code> 故障注入 / 改错网关地址</td><td>解释 status=unavailable，HTTP 200 降级返回；判定结论不受影响</td><td>否</td></tr>
+<tr><td>天气服务不可用</td><td>monkeypatch urlopen 抛 URLError</td><td>证据 status=unavailable 且异常证据落 evidence_v2</td><td>否</td></tr>
+<tr><td>RAG 检索零命中</td><td>与知识库零重叠查询</td><td>固定文本"无可靠依据"（matched=false，组件正常 evidence=ok）</td><td>否</td></tr>
+<tr><td>数据库不可打开</td><td>db.DB_PATH 指向不存在的目录</td><td>库存/需求接口返回 <code>(False, 500, "db error ...")</code>，不抛异常不崩溃</td><td>否（结构化降级）</td></tr>
+<tr><td>取证失败（签收凭证 unavailable）</td><td>快照注入 status=unavailable、数量为空的取证确认</td><td>有更早有效回执 → 沿用旧回执判定；无旧回执 → T1 unknown；不生成 blocker；T4 判 unknown</td><td>否（判定语义降级，禁止"未送达"）</td></tr>
+<tr><td>后端进程重启</td><td>两阶段子进程模拟重启（建 run → 新进程读回）</td><td>runs/5 条 task_results/blocker/3 套方案与判定/快照 JSON 完整保留</td><td>否</td></tr>
+<tr><td>端口被占用</td><td>二次启动同端口 uvicorn</td><td>系统报 Address already in use；README FAQ 给出排查命令</td><td>否（运维提示）</td></tr>
+</table>
+<p><img src="file:///e:/supplyguard/docs/screenshots/04-plans-run021.png"></p>
+<blockquote class="figcap"><b>图 5-1</b> 方案可行性判定视图（docs/screenshots/04-plans-run021.png，S3 场景）：PLAN-A 可执行，PLAN-B（V2 FAULT）/PLAN-C（路线超时）不可执行，逐条原因可见。</blockquote>
+<p><img src="file:///e:/supplyguard/docs/screenshots/08-s5-degrade.png"></p>
+<blockquote class="figcap"><b>图 5-2</b> 取证失败降级视图（docs/screenshots/08-s5-degrade.png，S5 场景）：流程条 T1"未知"、T4"待验证"，无缺口生成，全链路无"未送达"结论。</blockquote>
+<hr>
+<h2>6. 演进链路</h2>
+<h3>6.1 版本演进</h3>
+<table>
+<tr><th>阶段</th><th>时间</th><th>做了什么</th><th>对应 Commit</th><th>遇到的阻碍</th></tr>
+<tr><td>V0.1 阶段01</td><td>11-03 ~ 11-07</td><td>项目骨架、MQTT 模拟器与订阅、内存状态、告警接口</td><td>40ac709 ~ 07ff0d1</td><td>MQTT 跨线程 event_loop 并发 bug（45b382b 修复）</td></tr>
+<tr><td>V0.2 阶段02</td><td>11-08 ~ 11-09</td><td>SQLite 底座、观测落库、evidence 层、告警持久化、run 记录保护</td><td>6904a50 ~ ace41c4</td><td>db 模块名与 db() 函数冲突；坏 topic/解析失败需降级为 unavailable 证据</td></tr>
+<tr><td>V0.3 阶段03</td><td>11-09 ~ 11-14</td><td>run 快照冻结、T1~T5 判定、execute 编排、T1 验算闭环</td><td>2bd6b40 ~ c0ddf96</td><td>早期 T1 基于库存观测判定（业务口径偏差，commit #23 起修正为签收回执，见 LIMITATIONS.md）</td></tr>
+<tr><td>V0.4 阶段04</td><td>11-13 ~ 11-14</td><td>what-if 板块 1-4、S2 缺口识别、候选方案落库、plan_judge 可行性判定</td><td>fc960ad ~ f500d3e</td><td>方案判定与 T1 状态耦合风险 → 业务红线：判定不解除 T1 阻塞</td></tr>
+<tr><td>V0.5 阶段05</td><td>11-14</td><td>复核链路 REST（幂等签收、自动复测）、原生小程序两页面</td><td>edaacf2 ~ cbe8e97</td><td>签收幂等与状态单向流转需前后端双重防护</td></tr>
+<tr><td>V0.6 阶段06</td><td>11-14 ~ 11-15</td><td>辅助证据四件套（统计/天气/RAG/ML）+ LLM 双模式解释</td><td>99a90e3 ~ 7eba0a3</td><td>远程服务失联降级契约不统一 → 统一返回契约 + 三处边界缺陷修复</td></tr>
+<tr><td>V0.7 阶段07</td><td>11-15</td><td>S4 what-if 推演 + 六表指纹防污染；S5 取证失败三态降级 + 证据回填复测</td><td>68d11db ~ 9a0d217</td><td>取证失败不能误判"未送达"→ unknown/待验证语义，禁止 NOT_RECEIVED</td></tr>
+<tr><td>V1.0 阶段08</td><td>11-15</td><td>S1~S5 场景冻结、前端四视图 + 拓扑 + trace、回归体系（板块一/二）、E2E 验收、双演示脚本、前端预置数据脚本与场景校验加固</td><td>6829952 ~ f2208c8</td><td>three 渲染循环 bug；MQTT 断线丢订阅等 6 项链路缺陷（c0a1fc1 修复）</td></tr>
+</table>
+<h3>6.2 提交节奏说明</h3>
+<ul><li>共 51 条提交，<b>每个功能板块一条提交</b>，commit message 带改动文件清单与验收口径（如 f2208c8："fix：scenario_id校验+e2e路径修复+适配预置脚本 | main.py、console_e2e_check.py、prepare_frontend_test_data.py"）。</li><li>无历史改写：早期 22 条提交如实保留（LIMITATIONS.md 明确声明），未做 rebase/回滚/篡改。</li><li>集中提交说明：11-13 ~ 11-15 三天共 40 条提交（11-13 11 条、11-14 15 条、11-15 14 条，覆盖阶段04后半 ~ 阶段08），是交付档期的连续冲刺开发记录，每条仍按板块拆分并附回归结果，非批量回填；其中 11-15 的 14 条提交时间从 00:02 分布到 23:05，与各阶段回归测试实际运行对应。提交历史如图 6-1 所示。</li></ul>
+<h3>6.3 关键转折点</h3>
+<table>
+<tr><th>时刻</th><th>原来怎么做</th><th>为什么改</th><th>改完效果如何</th></tr>
+<tr><td>commit #23 起（阶段03，11-09）</td><td>T1 用 stock_observations 库存观测判断"需求可被保障"</td><td>库存充足 ≠ 物资送达服务点：判定口径与真实保障语义不符，会给出"保障成立"的假象</td><td>T1 改为以 receipt_records 签收回执为核心依据；旧提交保留为真实演进记录</td></tr>
+<tr><td>阶段07（11-15，d1594e0）</td><td>取证失败按 unsatisfied 处理，等价于判定"未送达"</td><td>签收单丢失/拍照失败不等于物资没送到；误判"未送达"的处置代价（重复投送、追责）高于"待验证"</td><td>引入 unknown/待验证三态降级，全链路禁止输出"未送达"；33 项专项用例覆盖</td></tr>
+<tr><td>阶段08（11-15，6829952）</td><td>演示靠手工改库/脚本注入，现场数据漂移后历史结论无法复现</td><td>同一场景两次演示结果不同，评委无法复现任何一条历史判定</td><td>场景文件冻结 + 现场变量显式走 overrides/assumptions + completed 快照触发器不可改；回归用例绑定固定 run_id 逐项比对</td></tr>
+</table>
+<pre>f2208c8 fix：scenario_id校验+e2e路径修复+适配预置脚本 | main.py、console_e2e_check.py、prepare_frontend_test_data.py | 增加场景合法性校验，移除硬编码路径，适配新校验规则
+581584f feat(test):新增前端预置测试脚本+两处缺陷修复 | prepare_frontend_test_data.py、console_e2e_check.py、main.py，稳定前端回归数据集，修复路径与scenario_id校验
+715530c Update .gitignore
+c0a1fc1 fix(mqtt): 6项MQTT链路缺陷修复 - 清理重复uvicorn进程 - 模拟器增加loop_start保活 - on_connect回调重订阅，解决断线丢订阅 - connect_async异步重试，支持无broker降级启动
+659909b feat(08‑3)：成功/失败两套演示脚本、Modify→Run→Verify全能力闭环、console自动刷新与run对比、e2e克隆验收、终验报告；215/215全量用例通过
+e46709c feat(08‑2)：正向+故障回归套件、E2E空环境自举、全套交付文档；103/103新增用例通过，历史用例回归正常；测试环境隔离不污染正式库
+6829952 feat(08‑1)：S1‑S5场景冻结，新增run‑trace追溯接口；前端四视图+Three.js拓扑集成；修复three渲染循环bug；基线与历史run一致性校验，自动化测试全部通过
+9a0d217 feat(07‑3)：实现证据回填复测，严格不修改历史run，SQL兼容无JSON1的SQLite，全量回归通过
+d1594e0 feat(07‑2): S5取证失败可信降级；实现证据unavailable场景unknown/pending_verification降级，禁止NOT_RECEIVED输出
+68d11db feat(07‑1): S4 what‑if假设推演；新建S3基线BB03‑RUN‑011，完成3组标准推演；增加基线六表sha256指纹防污染校验；新增what‑if接口、编排逻辑
+7eba0a3 feat+fix(06‑4): 在已有双模式LLM解释、开关降级基础上修复三处边界缺陷；统一远程服务失联降级返回契约，增加空对象守卫、补齐sqlite3导入；保障报告接口稳定性与工具调用轨迹完整性
+5450380 feat(06‑3): ML时序需求趋势预测模块，numpy手写逻辑回归；新增ml辅助证据类型，修正测试SQL列名；预测结果隔离写入evidence_v2
+688b355 feat(06‑2): 天气API、RAG检索辅助证据模块；完善多类异常降级，RAG携带来源引用；新增快照污染防护专项测试；全部结果仅写入evidence_v2，不改动T1‑T4核心判定
+99a90e3 feat(06‑1): pandas基础统计脚本、4个只读工具查询接口，调用轨迹自动落evidence_v2，作为辅助证据；T1‑T4判定逻辑不变
+cbe8e97 feat(05‑3): 原生微信小程序待复核列表、签收表单页面，下拉刷新、表单校验，照片仅UI占位留待阶段06实现，前后端双重状态防护
+87989c4 feat(05‑2): 新增复核REST接口，签收receipt_id幂等，签收生成reality run自动执行T1‑T5验算，验算失败支持手动重跑
+edaacf2 feat(05‑1): 新增review_requests表及review_store存储层 - 待复核单CRUD、pending状态幂等控制 - 校验trigger_run_id存在，状态单向流转，配套迁移脚本
+f500d3e feat(04-4)：新增 blockers、plans 查询接口，前端新增缺口 &amp; 方案评估卡片
+498a289 feat(04-3)：新增plan_judge.py，实现S3候选方案可行性判定，输出plan_results
+f4cfacf feat(04-2): S3候选调拨方案落库，写入plan_definitions；固定三套调拨方案，transfer_qty取自blocker缺口，仅入库不做可行性判断，幂等防重复</pre>
+<blockquote class="figcap"><b>图 6-1</b> 提交历史（<code>git log --oneline</code> 前 20 条，仓库共 51 条提交）：按板块一条一提交，全部保留、无历史改写。</blockquote>
+<hr>
+<h2>7. 已知限制与边界</h2>
+<table>
+<tr><th>限制</th><th>具体影响</th><th>会 / 不会解决</th></tr>
+<tr><td>数据来自模拟器与冻结场景，非真实传感器</td><td>全部结论是演练语义下的系统级验证，不代表真实环境运行结论</td><td>不会，属于设计范围（演练定位）</td></tr>
+<tr><td>缺口/候选方案/方案判定由 CLI 驱动，<code>POST /api/runs/{id}/execute</code> 只执行 T1~T5</td><td>REST 侧不能一键触发完整流水线</td><td>视后续需求可补</td></tr>
+<tr><td>微信小程序未在微信开发者工具实机运行</td><td>小程序为"代码完成 + 后端契约实测"状态</td><td>安装开发者工具后可补验</td></tr>
+<tr><td>MQTT 模拟器未生成 dispatch/receipt 消息</td><td>签收闭环走复核 API，不走 MQTT 链路</td><td>可扩展</td></tr>
+<tr><td>单机 SQLite 存储</td><td>无多用户并发与多机部署能力</td><td>不会，单机演示定位</td></tr>
+<tr><td>历史 run 判定不可修改（只增不改）</td><td>判定错误只能新建 run 复测，不能回改</td><td>不会，设计使然（追溯可信）</td></tr>
+</table>
+<hr>
+<h2>附录 A　AI 对话摘录</h2>
+<blockquote>原始对话材料归档于 <code>02_AI对话快照/</code>（三个案例目录），每个案例含：00-案例说明、01-原始提问截图、02-AI 第一版方案截图、03-发现的问题、04-纠偏指令截图、05-验证结果截图、99-完整对话记录.pdf（全文导出）。下表为正文引用关系；完整原文以 PDF 为准。</blockquote>
+<table>
+<tr><th>编号</th><th>内容</th><th>时间</th><th>对应案例</th></tr>
+<tr><td>A-1</td><td>完整对话记录 PDF（10 页）+ 原始提问截图 a-c + 改前/改后对比 4 张</td><td>2026-11-11</td><td>3.2</td></tr>
+<tr><td>A-2</td><td>完整对话记录 PDF（11 页）+ 原始提问与纠偏指令截图 + 改前/改后 2 张</td><td>2026-11-14</td><td>3.3</td></tr>
+<tr><td>A-3</td><td>完整对话记录 PDF（16 页）+ 原始提问、纠偏指令截图 + 改前/改后 4 张</td><td>2026-11-15</td><td>3.4</td></tr>
+</table>
+<hr></body></html>

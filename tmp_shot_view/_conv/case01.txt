@@ -1,0 +1,391 @@
+> 执行独立边界候选任务【runs列表分页查询接口】，只完成本任务，禁止提前实现其他
+调度功能。
+任务目标
+对已有的 runs 列表能力改造，实现分页查询接口 GET /api/runs/paginated。
+支持 page、page_size 分页参数；返回
+total（符合条件总记录数）、page、page_size、list。
+依然继承原有业务过滤逻辑：默认只返回 is_deleted=0 未被软删除的 run记录。
+业务要求
+1. GET /api/runs/paginated 入参：page、page_size，两个参数都必填。
+2. 对入参做合法性校验，非法参数需要返回合适的错误响应。
+3. 根据分页参数，查询对应范围的数据，同时统计符合过滤条件的总条数 total。
+4. 分页偏移计算逻辑：offset = (page - 1) * page_size，limit = page_size。
+5. 返回 json结构：
+{
+"total": 整数,
+"page": 传入的 page,
+"page_size": 传入的 page_size,
+"list": []
+}
+6. 当请求的页码超出已有数据范围时，正常返回结构，list为空数组，不要抛出服务异
+常。
+7. 原有老接口 GET /api/runs、GET /api/runs/all_with_deleted
+全部保留不动，不修改。
+硬性保护约束
+receipt、evidence、mqtt订阅、内存状态、告警、历史查询接口、阶段 2 全部主线代码
+、原有表结构，全部保持原样，禁止修改。
+仅允许改动：run_store.py增加分页查询函数，main.py新增 GET /api/runs/paginated
+接口。其他文件一律不动。
+硬性约束
+1. 复用现有 get_conn / close_conn 数据库连接方式。
+2. 禁止修改已存在的函数、已有接口逻辑。
+自测验证清单
+1. 正常分页请求，核对 list条数与 total 是否匹配。
+2. 传入非法分页参数，接口可以识别并返回错误。
+3. 页码超过最大页数，list返回空数组，不报错。
+4. 确认老接口 GET /api/runs 行为完全不变。
+5. 回归全部老接口，阶段 2 原有全部功能不受改动。
+
+===PAGE===
+
+交付输出
+1. 修改文件清单
+2. 实现简要说明
+3. 推荐 commit message
+输出整套 curl测试命令，方便验证。
+Thought for 10s, read 1 file (ctrl+o to expand)
+● Bash(grep -n "runs" /e/supplyguard/backend/main.py | head -20; echo "=== git
+log ==="; git -C /e/supplyguard log --oneline -5)
+⎿ (No output)
+Thought for 19s (ctrl+o to expand)
+● 先指出一个冲突：软删除任务已被你回滚（当前 runs 表无 is_deleted 列、run_store
+无软删除逻辑），但本任务文本要求「默认只返回 is_deleted=0 未被软删除的 run
+记录」，两者矛盾：
+● User answered Claude's questions:
+⎿ · 软删除已回滚（无 is_deleted 列），分页接口的过滤条件怎么处理？ →
+按现状：不带 is_deleted 过滤（推荐）
+Thought for 17s (ctrl+o to expand)
+● 按现状实现。run_store.py 加分页函数：
+● Update(backend\run_store.py)
+⎿ Added 22 lines
+72 return [_row_to_dict(r) for r in rows]
+73
+74
+75 +def list_runs_paginated(page: int, page_size: int) -> dict:
+76 + """分页查询 run (与 list_runs 同口径)。offset=(page-1)*page
++_size, 超页返回空 list。
+77 +
+78 + 入参合法性 (page>=1, page_size>=1) 由接口层校验。
+79 + """
+80 + conn = get_conn()
+81 + try:
+82 + total = conn.execute("SELECT COUNT(*) FROM runs").fetch
++one()[0]
+83 + rows = conn.execute(
+84 + "SELECT * FROM runs ORDER BY created_at LIMIT ? OFF
++SET ?",
+85 + (page_size, (page - 1) * page_size),
+86 + ).fetchall()
+
+===PAGE===
+
+87 + finally:
+88 + close_conn(conn)
+89 + return {
+90 + "total": total,
+91 + "page": page,
+92 + "page_size": page_size,
+93 + "list": [_row_to_dict(r) for r in rows],
+94 + }
+95 +
+96 +
+97 def update_run(run_id: str, payload: dict) -> tuple:
+98 """更新 run 内容: 仅 pending 允许; completed 拒绝且不改动数
+据库。"""
+99 try:
+Thought for 3s (ctrl+o to expand)
+● main.py：接口注册在 /api/runs/{run_id} 之前（避免被动态段吞掉）：
+● Update(backend\main.py)
+⎿ Added 3 lines, removed 1 line
+28
+29 from mqtt_client import ALERTS, CURRENT_STATE, start_mqtt, stop
+_mqtt
+30 from db import get_conn, close_conn
+31 -from run_store import complete_run, create_run, get_run, list_r
+-uns, update_run
+31 +from run_store import (
+32 + complete_run, create_run, get_run, list_runs, list_runs_pag
++inated, update_run,
+33 +)
+34
+35 DB = Path(__file__).parent / "supplyguard.db"
+36 FRONTEND = Path(__file__).parent.parent / "frontend"
+● Update(backend\main.py)
+⎿ Added 11 lines
+493 return {"runs": list_runs()}
+494
+495
+496 +@app.get("/api/runs/paginated")
+497 +def runs_paginated(page: int, page_size: int):
+498 + """独立任务: runs 分页查询。page/page_size 必填且 >=1; 超
++页返回空 list。
+499 +
+500 + 注意: 此路由须注册在 /api/runs/{run_id} 之前, 否则被动态段
++吞掉。
+
+===PAGE===
+
+501 + """
+502 + if page < 1 or page_size < 1:
+503 + raise HTTPException(status_code=422, detail="page and
++page_size must be >= 1")
+504 + return list_runs_paginated(page, page_size)
+505 +
+506 +
+507 @app.get("/api/runs/{run_id}")
+508 def runs_get(run_id: str):
+509 """独立任务: 查询单个 run (任意状态可读)."""
+Thought for 6s (ctrl+o to expand)
+● Bash(python -c "
+import sys…)
+⎿ (No output)
+Thought for 4s (ctrl+o to expand)
+● 函数级正确。HTTP 层验证：
+● Bash(cat > /c/Users/DELL/AppData/Local/Temp/bb03_pag_http.py << 'EOF'
+import sys…)
+⎿ Running in the background (↓ to manage)
+● Bash(for i in $(seq 1 40); do curl -s -o /dev/null
+http://127.0.0.1:8003/api/runs 2>/dev/null && break; sleep 0.5; done; echo
+"== 正常分页 =="; curl -s "http://127.0.0.1…)
+⎿ (No output)
+Thought for 5s (ctrl+o to expand)
+● 全部通过。收尾：
+● Bash(pid=$(netstat -ano | grep ":8003" | grep LISTENING | head -1 | awk
+'{print $NF}'); [ -n "$pid" ] && taskkill //F //PID $pid >/dev/null 2>&1;
+python -m py_compil…)
+⎿ (No output)
+● Background command "Start HTTP test server 8003 on temp DB (background)"
+failed with exit code 1
+Thought for 4s (ctrl+o to expand)
+● 独立任务【runs 列表分页查询】完成，验收清单全绿。
+修改文件清单
+
+===PAGE===
+
+┌──────────────────────────┬────────────
+──────────────────────────────────┐
+│ 文件 │ 变更 │
+├──────────────────────────┼────────────
+──────────────────────────────────┤
+│ │ 新增 list_runs_paginated(page, │
+│ run_store.py │ page_size)：COUNT 统计 total + LIMIT ? │
+│ (backend/run_store.py) │ OFFSET ? 取页，排序与 list_runs │
+│ │ 一致（created_at 升序） │
+├──────────────────────────┼────────────
+──────────────────────────────────┤
+│ main.py │ 新增 GET /api/runs/paginated（注册在 │
+│ (backend/main.py) │ /api/runs/{run_id} 之前，避免被动态段吞掉） │
+└──────────────────────────┴────────────
+──────────────────────────────────┘
+按你确认的方案：过滤口径与现有 GET /api/runs 完全一致（软删除已回滚，无
+is_deleted 过滤）。db.py 及其余文件零改动，已有函数与老接口逻辑未动。
+实现说明
+- 入参校验：page/page_size 为必填 query 参数（缺失 → FastAPI 自动
+422）；手动校验 >= 1（0/负数 → 422）
+- 分页公式：offset = (page-1) * page_size，limit = page_size
+- 超页行为：正常返回 {"total":7, "page":99, "page_size":3, "list":[]}，HTTP
+200，不抛异常
+- 返回结构严格按任务给定：{total, page, page_size, list}
+验证结果（7 条测试数据）
+┌───────────────────────────────────────
+────────────────────────┬──────────┐
+│ 用例 │ 结果 │
+├───────────────────────────────────────
+────────────────────────┼──────────┤
+│ page=1size=3 → 3 条、total=7 │ ✓ │
+├───────────────────────────────────────
+────────────────────────┼──────────┤
+│ page=2 size=3 → 3 条 │ ✓
+│
+├───────────────────────────────────────
+────────────────────────┼──────────┤
+│ page=3size=3 → 1 条（尾页） │ ✓ │
+├───────────────────────────────────────
+────────────────────────┼──────────┤
+│ page=2 size=5 → offset 正确取 2 条 │ ✓
+
+===PAGE===
+
+│
+├───────────────────────────────────────
+────────────────────────┼──────────┤
+│ page=99 → 200 空 list、total 不变 │ ✓ │
+├───────────────────────────────────────
+────────────────────────┼──────────┤
+│ page=0 / page_size=0 / page=-1 / page=abc / 缺参 │ 全部 422 │
+│ │ ✓ │
+├───────────────────────────────────────
+────────────────────────┼──────────┤
+│ GET /api/runs 全量 7 条不变 │ ✓ │
+├───────────────────────────────────────
+────────────────────────┼──────────┤
+│ 老接口回归（current-state/alerts/告警历史/历史查询/evidence） │ 全 200 ✓ │
+└───────────────────────────────────────
+────────────────────────┴──────────┘
+推荐 commit message
+feat: runs 分页查询接口
+- run_store: list_runs_paginated 分页查询 (COUNT 统计 total + LIMIT/OFFSET)
+- main.py: GET /api/runs/paginated, page/page_size 必填且 >=1,
+非法参数 422, 超页返回空 list
+整套 curl 测试命令
+# 先造点数据（后端已启动）
+curl -X POST "http://127.0.0.1:8000/api/runs?run_id=P001" -H "Content-Type:
+application/json" -d '{"n":1}'
+curl -X POST "http://127.0.0.1:8000/api/runs?run_id=P002" -H "Content-Type:
+application/json" -d '{"n":2}'
+curl -X POST "http://127.0.0.1:8000/api/runs?run_id=P003" -H "Content-Type:
+application/json" -d '{"n":3}'
+curl -X POST "http://127.0.0.1:8000/api/runs?run_id=P004" -H "Content-Type:
+application/json" -d '{"n":4}'
+curl -X POST "http://127.0.0.1:8000/api/runs?run_id=P005" -H "Content-Type:
+application/json" -d '{"n":5}'
+# 1. 正常分页：total=5, list 3 条
+curl "http://127.0.0.1:8000/api/runs/paginated?page=1&page_size=3"
+# 2. 第二页：2 条
+curl "http://127.0.0.1:8000/api/runs/paginated?page=2&page_size=3"
+# 3. 超页：200, list=[]
+curl -i "http://127.0.0.1:8000/api/runs/paginated?page=99&page_size=3"
+# 4. 非法参数：全部 422
+curl -i "http://127.0.0.1:8000/api/runs/paginated?page=0&page_size=3"
+
+===PAGE===
+
+curl -i "http://127.0.0.1:8000/api/runs/paginated?page=1&page_size=0"
+curl -i "http://127.0.0.1:8000/api/runs/paginated?page=abc&page_size=3"
+curl -i "http://127.0.0.1:8000/api/runs/paginated?page=1"
+# 5. 老接口不变：仍是全量
+curl "http://127.0.0.1:8000/api/runs"
+提醒：你 8000 端口跑着的后端是 --reload 模式，改 main.py/run_store.py
+后会自动重载新接口，无需手动重启。
+> 执行独立边界任务【分页接口加固：page_size 上限 +
+按 created_at倒序】，只完成本任务，禁止提前实现其他调度功能。
+任务目标
+改造 /api/runs/paginated 分页接口
+1. page_size 增加上限：最大允许 50，传入超过 50 的值自动钳位到 50，不报错
+2. 查询结果必须按 created_at DESC 倒序返回，新创建的 run排在最前面
+核心业务红线（重点）
+1. 易错坑 1：忘记限制 page_size，超大 page_size 直接全量拉取
+2. 易错坑 2：排序方向写反，变成 created_at正序
+3. 原有分页返回结构（total、page、page_size、list）不能改动
+4. 只修改 run_store.py 的分页查询逻辑，不要新增数据表、不要改动其他接口
+自测清单
+1. page_size=10000，自动限制为 50
+2. 正常分页查询，列表顺序：最新创建的 run在前
+3. page=1 page_size=3，返回前 3 条最新数据
+4. 原有分页参数、返回字段保持不变
+交付物
+run_store.py 修改，不需要新增其他文件
+Thought for 13s (ctrl+o to expand)
+● Update(backend\run_store.py)
+⎿ Added 7 lines, removed 1 line
+72 return [_row_to_dict(r) for r in rows]
+73
+74
+75 +PAGE_SIZE_MAX = 50 # 分页加固: 单页上限, 超出自动钳位不报错
+76 +
+77 +
+78 def list_runs_paginated(page: int, page_size: int) -> dict:
+79 """分页查询 run (与 list_runs 同口径)。offset=(page-1)*page
+_size, 超页返回空 list。
+80
+81 + 分页加固: page_size 超过 PAGE_SIZE_MAX 时自动钳位到 50 (不
+
+===PAGE===
+
++报错);
+82 + 结果按 created_at 倒序 (rowid 兜底稳定同秒顺序), 最新创建的
++ run 在前。
+83 入参合法性 (page>=1, page_size>=1) 由接口层校验。
+84 """
+85 + page_size = min(page_size, PAGE_SIZE_MAX)
+86 conn = get_conn()
+87 try:
+88 total = conn.execute("SELECT COUNT(*) FROM runs").fetch
+one()[0]
+89 rows = conn.execute(
+84 - "SELECT * FROM runs ORDER BY created_at LIMIT ? OFF
+-SET ?",
+90 + "SELECT * FROM runs ORDER BY created_at DESC, rowid
++ DESC LIMIT ? OFFSET ?",
+91 (page_size, (page - 1) * page_size),
+92 ).fetchall()
+93 finally:
+● Bash(python -c "
+import sys, time…)
+⎿ (No output)
+Thought for 7s (ctrl+o to expand)
+● 钳位和倒序都正确（最后一项 False 是我测试断言忘了 55 也会被钳到 50——实际返回
+50 条，尾部到 A006 正确）。补精确验证：
+● Bash(python -c "
+import sys…)
+⎿ (No output)
+Thought for 5s (ctrl+o to expand)
+● Bash(sed 's/bb03_test_pag.db/bb03_test_pag2.db/'
+/c/Users/DELL/AppData/Local/Temp/bb03_pag_http.py >
+/c/Users/DELL/AppData/Local/Temp/bb03_pag2_http.py && python /c/…)
+⎿ Running in the background (↓ to manage)
+● Bash(for i in $(seq 1 40); do curl -s -o /dev/null
+http://127.0.0.1:8003/api/runs 2>/dev/null && break; sleep 0.5; done; echo
+"== 1. page_size=10000 钳位 =="; curl -s…)
+⎿ (No output)
+● Bash(pid=$(netstat -ano | grep ":8003" | grep LISTENING | head -1 | awk
+'{print $NF}'); [ -n "$pid" ] && taskkill //F //PID $pid >/dev/null 2>&1;
+python -m py_compil…) ⎿ (No output)
+
+===PAGE===
+
+● Background command "Start HTTP test server 8003 (background)" failed with exit
+code 1
+Thought for 4s (ctrl+o to expand)
+● 独立任务【分页接口加固】完成，只改了 run_store.py。
+修改文件清单
+┌──────────────────────────┬────────────
+──────────────────────────────────┐
+│ 文件 │ 变更 │
+├──────────────────────────┼────────────
+──────────────────────────────────┤
+│ │ list_runs_paginated 两处改动：① page_size = │
+│ run_store.py │ min(page_size, 50) 钳位；② 排序改 ORDER BY │
+│ (backend/run_store.py) │ created_at DESC, rowid DESC。新增常量 │
+│ │ PAGE_SIZE_MAX = 50 │
+└──────────────────────────┴────────────
+──────────────────────────────────┘
+实现说明
+- 钳位不报错：传入 >50 自动钳到 50，返回结构里的 page_size
+是钳位后的实际值（total/page/list 语义不变）
+- 倒序：created_at DESC，同秒创建时用 rowid DESC
+兜底（后插入的在前），分页跨页顺序稳定
+- 返回结构 {total, page, page_size, list} 未动；main.py 及其他文件零改动
+验证结果（55 条数据：50 条旧 + 5 条新）
+┌────────────────────┬──────────────────
+──────────────────────────────────┐
+│ 自测项 │ 结果 │
+├────────────────────┼──────────────────
+──────────────────────────────────┤
+│ page_size=10000 │ 实际 page_size=50、list 50 条、total=55 ✓ │
+├────────────────────┼──────────────────
+──────────────────────────────────┤
+│ page=1 size=3 │ B005/B004/B003 最新在前 ✓ │
+├────────────────────┼──────────────────
+──────────────────────────────────┤
+│ 两页拼接 │ 等于完整 created_at 倒序（B005…B001 + A050…A001）✓ │
+├────────────────────┼──────────────────
+──────────────────────────────────┤
+│ 非法参数（page=0） │ 仍 422 ✓ │
+
+===PAGE===
+
+├────────────────────┼──────────────────
+──────────────────────────────────┤
+│ 老接口回归 │ /api/runs、current-state、alerts/history 全 200 ✓ │
+└────────────────────┴──────────────────
+──────────────────────────────────┘
+推荐 commit message
+fix: 分页接口加固 (page_size 上限 50 + created_at 倒序)
+- run_store: page_size 超 50 自动钳位不报错, 排序改为
+created_at DESC + rowid DESC 稳定同秒顺序
+curl 快速验证：
+# page_size=10000 → 返回里 page_size=50
+curl "http://127.0.0.1:8000/api/runs/paginated?page=1&page_size=10000"
+# 最新创建的 run 排最前
+curl "http://127.0.0.1:8000/api/runs/paginated?page=1&page_size=3"

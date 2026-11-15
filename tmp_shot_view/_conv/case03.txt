@@ -1,0 +1,697 @@
+> 【前置条件：板块 3 完成提交】
+【板块目标】
+1. 后端新增 4 个只读工具调用接口：
+get_current_demand(service_id)
+get_current_stock(reserve_id, material_id)
+get_task_result(run_id, task_id)
+get_plan_results(run_id)
+2. 工具只读不修改业务；每次调用轨迹写入 evidence_v2 作为 tool trace 证据
+3. LLM解释遵循"先计算，再解释"；输入=T1~T5 结构化结果+统计摘要+天气/RAG/ML/工
+具证据；LLM仅做自然语言解读，不改判定结论，解释文本写入 evidence_v2
+4. 输入 run_id 聚合全部证据输出标准 Markdown 阶段报告
+5. 失效降级专项：分别让 weather/RAG/ML/LLM 组件故障，验证标记 unavailable，T1‑ T4
+不受影响，报告标注异常
+6. 6.9 Modify→Run→Verify 验证：关闭外部源，T5 仍可基于历史数据降级分析
+7. 总验收文档 docs/stage06_test_guide.md；6.10通关画面检查清单
+【工作指令】
+1. 编写
+backend/ai_tools.py，封装 4 个查询工具函数，全部为只读查询，禁止修改业务数据。
+2. 修改
+backend/main.py：仅追加工具调用 GET 接口与 LLM解释接口，原有全部接口、T1~T4 判定
+逻辑保持完全不变；每一次工具调用，自动将调用轨迹写入 evidence_v2保存 tool
+trace；LLM生成的解释文本写入 evidence_v2。
+3. 编写 analysis/llm_explainer.py，严格执行“先计算，再解释”流程；组装上下文输
+入：T1‑ T5 结构化任务结果、统计摘要、天气/RAG/ML/工具全部辅助证据；大模型仅做结
+果解读，不修改原有业务判定。
+4. 编写 analysis/report_builder.py，接收 run_id，聚合统计结果、天气、RAG、ML、
+工具调用 trace、LLM 解释全部证据，输出规范 Markdown分析报告。
+5. 完成组件失效降级专项测试：分别模拟 weather/RAG/ML/LLM组件异常故障；确认异常
+字段标记 unavailable、T1‑ T4判定完全不受影响、报告内标注组件异常信息。
+6. 完成 6.9 Modify‑ Run‑ Verify 链路验证：关闭外部数据源，验证 T5可以依靠本地历史
+证据完成降级分析。
+7. 编写总验收文档
+docs/stage06_test_guide.md，包含完整 6.9全链路测试指引、6.10通关画面检查清单，
+覆盖全部证据项、组件降级案例；仅新增脚本与文档，原有业务代码零改动。
+Thought for 1m 4s, read 1 file (ctrl+o to expand)
+● 收到。本轮只写交付物，只做语法级编译检查，不做任何功能验证。开始。
+1. backend/ai_tools.py
+● Write(backend\ai_tools.py)
+⎿ Wrote 234 lines to backend\ai_tools.py
+1 """阶段 06板块 4: 4 个只读查询工具 + 调用轨迹 (tool trace) 自动落
+evidence_v2.
+
+===PAGE===
+
+2
+3 工具 (全部只读 SELECT, 禁止修改任何业务数据/判定结果):
+4 get_current_demand(service_id=None)
+5 当前服务点需求: 每个 (服务点, 物资) 最新一条需求观测
+6 (口径与 T1 校验的 _latest_demands 一致)
+7 get_current_stock(reserve_id=None, material_id=None)
+8 当前储备点库存: 每个 (储备点, 物资) 最新一条库存观测
+9 get_task_result(run_id, task_id='T1')
+… +225 lines (ctrl+o to expand)
+Thought for 2s (ctrl+o to expand)
+● 2. analysis/llm_explainer.py
+● Write(analysis\llm_explainer.py)
+⎿ Wrote 371 lines to analysis\llm_explainer.py
+1 """阶段 06板块 4: LLM 解释模块 llm_explainer (严格执行「先计算, 再
+解释」).
+2
+3 流程 (两条铁律):
+4 1. 先计算: T1~T5 判定结果由任务执行链 (task_execute) 事先计算
+并落库
+5 (task_results / dependency_checks)。本模块只读这些结构化结
+果 +
+6 统计摘要 + 全部辅助证据, 组装解释上下文 —— 绝不重新计算判
+定,
+… +365 lines (ctrl+o to expand)
+Thought for 3s (ctrl+o to expand)
+● 3. analysis/report_builder.py
+● Write(analysis\report_builder.py)
+⎿ Wrote 308 lines to analysis\report_builder.py
+1 """阶段 06板块 4: 标准 Markdown 阶段报告构建器 report_builder.
+2
+3 输入 run_id, 聚合以下全部证据输出标准 Markdown 阶段报告:
+4 - T1~T5 结构化判定结果 (task_results / dependency_checks, 只
+读)
+5 - 缺口与候选方案 (blockers / plan_results, 只读)
+6 - 统计摘要 (stats_collect 同口径: 物资缺口频次 / 方案失败原
+因分布)
+7 - 辅助证据 (天气 / ML / RAG / 工具调用轨迹 evidence_v2)
+8 - LLM 解释 (llm_explainer, 先计算再解释; 故障时报告标注异常)
+… +300 lines (ctrl+o to expand)
+Thought for 6s (ctrl+o to expand)
+
+===PAGE===
+
+● 4. run_store.py 枚举扩展 + rag/ml 模块的失效注入点
+● Update(backend\run_store.py)
+⎿ Added 5 lines, removed 3 lines
+1505
+1506 # ===========================================================
+=
+1507 # 阶段 02 板块 4: 统一证据表 evidence_v2 (只新增, 不改动任何已有
+函数)
+1508 -# 阶段 06 板块 2/3: 新增 weather / rag / ml 辅助证据类型 (只扩展
+-枚举,
+1509 -# 不改动判定逻辑; T1~T5 校验不读 evidence_v2, 新增类型不影响
+-任何判定结果)
+1508 +# 阶段 06 板块 2/3/4: 新增 weather / rag / ml / tool / llm 辅助
++证据类型
+1509 +# (只扩展枚举, 不改动判定逻辑; T1~T5 校验不读 evidence_v2, 新
++增类型
+1510 +# 不影响任何判定结果)
+1511 # ===========================================================
+=
+1512 _ALLOWED_EVIDENCE_TYPES = {"stock", "demand", "dispatch", "re
+ceipt",
+1512 - "transport", "weather", "rag", "ml
+-"}
+1513 + "transport", "weather", "rag", "ml
++",
+1514 + "tool", "llm"}
+1515 _ALLOWED_EVIDENCE_STATUS = {"ok", "unavailable", "error"}
+1516
+1517
+● Update(backend\run_store.py)
+⎿ Added 2 lines, removed 1 line
+1521
+1522 入参校验 (代码层, 不合法直接抛 ValueError, 不落库):
+1523 evidence_type ∈ {stock, demand, dispatch, receipt, t
+ransport,
+1524 - weather, rag, ml} (weather/rag/ml
+-为阶段 06 辅助证据)
+1524 + weather, rag, ml, tool, llm}
+1525 + (weather/rag/ml/tool/llm 为阶段 06辅
++助证据)
+1526 status ∈ {ok, unavailable, error}
+1527 source_id 非空 str (关联外部业务记录 ID, 如 deman
+d_id/dispatch_id/receipt_id)
+1528 value_json None 或 str (原始观测/原始报文 JSON 字
+
+===PAGE===
+
+符串; 获取失败传 None 存 NULL)
+● Update(analysis\rag_store.py)
+⎿ Added 11 lines, removed 4 lines
+206 """RAG 检索 + 结果写入 evidence_v2 (辅助证据, 不触碰任何判
+定结果)。
+207
+208 - query 缺失/空白 → (False, 400, ...)
+209 - - 检索命中/未命中都落库: evidence status='ok', value_json
+-含
+210 - matched 标记; 未命中 answer 为固定文本 "无可靠依据"
+209 + - 知识库有文档: 命中/未命中都落库, evidence status='ok', v
++alue_json
+210 + 含 matched 标记; 未命中 answer 为固定文本 "无可靠依据"
+211 + - 知识库为空/不可读 (doc_count=0, 组件故障): answer 仍为固
++定文本
+212 + "无可靠依据", 但 evidence status='unavailable' 并携带 er
++ror_message
+213 + (阶段 06 板块 4 失效降级专项: 组件故障标记 unavailable)
+214 - 数据库错误 → (False, 500, ...)
+215 返回 (ok, http_status, msg, data); data = 检索结果 + evide
+nce_id。
+216 """
+...
+220 return False, 400, "query required", None
+221 query = str(query).strip()
+222 result = search_rag(query)
+223 + # 组件故障判定: 知识库无任何可用文档 → 组件降级 (区别于查
++询无匹配)
+224 + component_degraded = result["doc_count"] == 0
+225 + result["component_status"] = "degraded" if component_degra
++ded else "ok"
+226 evidence_id = None
+227 try:
+228 ok, evidence_id = save_evidence(
+229 evidence_type="rag",
+230 source_id="query:" + hashlib.sha1(
+231 query.encode("utf-8")).hexdigest()[:12],
+226 - status="ok", # 检索动作成功完成 (无结果 ≠ 证据不
+-可用)
+232 + status="unavailable" if component_degraded else "o
++k",
+233 value_json=json.dumps(result, ensure_ascii=False),
+234 observed_at=_now(),
+229 - error_message="",
+235 + error_message=("rag_docs 知识库为空或不可读, RAG
++组件异常"
+
+===PAGE===
+
+236 + if component_degraded else ""),
+237 )
+238 except ValueError as exc:
+239 return False, 500, "rag evidence save failed: %s" % ex
+c, None
+Thought for 3s (ctrl+o to expand)
+● Update(analysis\ml_demand_predict.py)
+⎿ Added 1 line
+23 """
+24
+25 import json
+26 +import os
+27 import sys
+28 import sqlite3
+29 from datetime import datetime
+● Update(analysis\ml_demand_predict.py)
+⎿ Added 37 lines
+237
+238 - 预测结果 (含模型状态) 写入 evidence_v2: evidence_type='m
+l',
+239 status='ok', value_json 为完整预测载荷
+240 + - SUPPLYGUARD_ML_DISABLED=1 (阶段 06板块 4 失效降级专项故障
++注入):
+241 + 跳过训练, evidence status='unavailable' 并携带 error_mes
++sage
+242 - 数据库错误 → (False, 500, ...)
+243 返回 (ok, http_status, msg, data); data = 预测载荷 + evide
+nce_id。
+244 """
+245 from backend.run_store import save_evidence # 懒加载, 纯
+预测不依赖 DB
+246
+247 + if os.environ.get("SUPPLYGUARD_ML_DISABLED", "") == "1":
+248 + result = {
+249 + "model": MODEL_NAME,
+250 + "classes": TREND_CLASSES,
+251 + "auxiliary_only": True,
+252 + "observed_at": _now(),
+253 + "model_status": "unavailable",
+254 + "skipped_runs": [],
+255 + "prediction": {
+256 + "trend": None,
+257 + "probability": None,
+258 + "window": "下一窗口",
+
+===PAGE===
+
+259 + "latest_run_id": None,
+260 + "note": "ML component disabled (故障注入)",
+261 + },
+262 + }
+263 + evidence_id = None
+264 + try:
+265 + ok, evidence_id = save_evidence(
+266 + evidence_type="ml",
+267 + source_id="ml:demand-trend",
+268 + status="unavailable",
+269 + value_json=json.dumps(result, ensure_ascii=Fal
++se),
+270 + observed_at=result["observed_at"],
+271 + error_message="ML component disabled by "
+272 + "SUPPLYGUARD_ML_DISABLED=1 (故障
++注入)",
+273 + )
+274 + except ValueError as exc:
+275 + return False, 500, "ml evidence save failed: %s" %
++ exc, None
+276 + if not ok:
+277 + return False, 500, "ml evidence save failed: %s" %
++ evidence_id, None
+278 + data = dict(result)
+279 + data["evidence_id"] = evidence_id
+280 + return True, 200, "ml component disabled (unavailable)
++", data
+281 +
+282 try:
+283 result = predict_next_window()
+284 except sqlite3.Error as exc:
+Thought for 3s (ctrl+o to expand)
+● 5. main.py 追加接口 — 先确认当前文件状态：
+● Bash(cd e:/supplyguard && sed -n '1,30p' backend/main.py && echo "......" &&
+tail -30 backend/main.py && grep -n "def api_ml_demand_trend"
+backend/main.py)
+⎿ (No output)
+● Update(backend\main.py)
+⎿ Added 3 lines
+17 if str(_PROJECT_ROOT) not in sys.path:
+18 sys.path.insert(0, str(_PROJECT_ROOT))
+19
+20 +from analysis.llm_explainer import run_llm_explain
+21 from analysis.ml_demand_predict import run_ml_predict
+
+===PAGE===
+
+22 from analysis.rag_store import run_rag_query
+23 +from analysis.report_builder import build_report
+24 from analysis.weather_evidence import run_weather_evidence
+25 +import ai_tools
+26 from constants import RUN_TYPE
+27 from db import close_conn, get_conn, next_run_id
+28 from gap_check import get_blockers
+● Update(backend\main.py)
+⎿ Added 93 lines
+662 return data
+663
+664
+665 +# ============================================================
+666 +# 阶段 06 板块 4: 只读工具调用接口 + LLM 解释接口 + 阶段报告接口
+667 +# (全部只新增, 原有接口与 T1~T4 判定逻辑保持完全不变)
+668 +# - GET /api/tools/current-demand 当前需求 (每次调用自动落 to
++ol trace)
+669 +# - GET /api/tools/current-stock 当前库存 (同上)
+670 +# - GET /api/tools/task-result T1~T5 任务结果 (同上)
+671 +# - GET /api/tools/plan-results 候选方案判定 (同上)
+672 +# - GET /api/explain LLM 解释 (先计算再解释, 解
++释落 evidence_v2)
+673 +# - GET /api/reports/{run_id} 标准 Markdown 阶段报告 (聚
++合全部证据)
+674 +# 工具只读不修改业务; tool trace 证据类型为 'tool', LLM 解释为
++ 'llm'。
+675 +# ============================================================
+676 +
+677 +@app.get("/api/tools/current-demand")
+678 +def api_tool_current_demand(service_id: str = None):
+679 + """只读工具: 当前服务点需求 (每服务点每物资最新一条需求观
++测)。
+680 +
+681 + - 每次调用自动把调用轨迹写入 evidence_v2 (tool trace)
+682 + - service_id 可选; 无匹配 → 空列表
+683 + """
+684 + ok, http_status, msg, data = ai_tools.get_current_demand(s
++ervice_id)
+685 + if not ok:
+686 + raise HTTPException(status_code=http_status, detail=ms
++g)
+687 + return data
+688 +
+689 +
+690 +@app.get("/api/tools/current-stock")
+691 +def api_tool_current_stock(reserve_id: str = None, material_id
+
+===PAGE===
+
++: str = None):
+692 + """只读工具: 当前储备点库存 (每储备点每物资最新一条库存观
++测)。
+693 +
+694 + - 每次调用自动落 tool trace; 两个过滤参数均可选, 可组合
+695 + """
+696 + ok, http_status, msg, data = ai_tools.get_current_stock(re
++serve_id,
+697 + ma
++terial_id)
+698 + if not ok:
+699 + raise HTTPException(status_code=http_status, detail=ms
++g)
+700 + return data
+701 +
+702 +
+703 +@app.get("/api/tools/task-result")
+704 +def api_tool_task_result(run_id: str, task_id: str = "T1"):
+705 + """只读工具: T1~T5 任务结果 + 依赖检查明细 (每次调用自动落
++ tool trace)。
+706 +
+707 + - run_id 必填; run 不存在 → 404
+708 + """
+709 + ok, http_status, msg, data = ai_tools.get_task_result(run_
++id, task_id)
+710 + if not ok:
+711 + raise HTTPException(status_code=http_status, detail=ms
++g)
+712 + return data
+713 +
+714 +
+715 +@app.get("/api/tools/plan-results")
+716 +def api_tool_plan_results(run_id: str):
+717 + """只读工具: 候选方案 + 可行性判定 (每次调用自动落 tool tr
++ace)。
+718 +
+719 + - run_id 必填; run 不存在 → 404
+720 + """
+721 + ok, http_status, msg, data = ai_tools.get_plan_results(run
++_id)
+722 + if not ok:
+723 + raise HTTPException(status_code=http_status, detail=ms
++g)
+724 + return data
+725 +
+726 +
+727 +@app.get("/api/explain")
+
+===PAGE===
+
+728 +def api_explain(run_id: str):
+729 + """LLM 解释接口 (阶段 06板块 4, 先计算→再解释)。
+730 +
+731 + - 输入: T1~T5 结构化结果 + 统计摘要 + 天气/RAG/ML/工具全部
++辅助证据
+732 + - LLM 仅做自然语言解读, 不修改任何判定结论; 解释文本写入
+733 + evidence_v2 (evidence_type='llm')
+734 + - LLM 故障/禁用 → status='unavailable' (HTTP 200 降级),
+735 + 判定结论不受影响; run 不存在 → 404
+736 + """
+737 + ok, http_status, msg, data = run_llm_explain(run_id)
+738 + if not ok:
+739 + raise HTTPException(status_code=http_status, detail=ms
++g)
+740 + return data
+741 +
+742 +
+743 +@app.get("/api/reports/{run_id}")
+744 +def api_report(run_id: str):
+745 + """标准 Markdown 阶段报告 (阶段 06 板块 4)。
+746 +
+747 + - 聚合 T1~T5 判定结果 / 缺口 / 方案 / 统计摘要 / 天气 / ML
++ / RAG /
+748 + 工具轨迹 / LLM 解释 全部证据
+749 + - 组件异常在报告「六、组件健康状态」标注 ⚠
+750 + - run 不存在 → 404
+751 + """
+752 + ok, http_status, msg, data = build_report(run_id)
+753 + if not ok:
+754 + raise HTTPException(status_code=http_status, detail=ms
++g)
+755 + return data
+756 +
+757 +
+758 @app.websocket("/ws/guarantee")
+759 async def ws_guarantee(websocket: WebSocket):
+760 bind_loop(asyncio.get_running_loop())
+Thought for 6s (ctrl+o to expand)
+● 6. docs/stage06_test_guide.md 总验收文档
+● Write(docs\stage06_test_guide.md)
+⎿ Wrote 229 lines to docs\stage06_test_guide.md
+1 # 阶段 06 总验收测试指引（含 6.9 全链路验证与 6.10 通关画面检查清
+单）
+2
+
+===PAGE===
+
+3 | 项目 | 内容 |
+4 |---|---|
+5 | 覆盖范围 | 板块 1 统计脚本、板块 2 天气/RAG、板块 3 ML 预测、板块 4
+只读工具 + LLM 解释 + 阶段报告 |
+6 | 核心红线 | 全部辅助组件（天气/RAG/ML/工具/LLM）只产出 evidence_
+v2 辅助证据；T1~T4 判定逻辑与结果零改动；组件故障一律降级并标注异
+常 |
+… +223 lines (ctrl+o to expand)
+Thought for 4s (ctrl+o to expand)
+● 7. 语法级编译检查（仅此，不做功能验证）
+● Bash(cd e:/supplyguard && python -m py_compile backend/ai_tools.py
+backend/main.py backend/run_store.py analysis/llm_explainer.py
+analysis/report_builder.py analysis…)
+⎿ (No output)
+Thought for 3s (ctrl+o to expand)
+● 板块 06-4 交付物全部写完，仅做了语法编译检查，未做任何功能验证。
+变更摘要（未提交）：
+文件: backend/ai_tools.py
+状态: 新增
+说明: 4 个只读查询工具（当前需求/当前库存/任务结果/方案判定），复用 t1_check
+与
+plan_store 口径；每次调用自动落 tool
+trace（evidence_type='tool'），轨迹写失败不阻塞查询
+────────────────────────────────────────
+文件: analysis/llm_explainer.py
+状态: 新增
+说明: 先计算→再解释：上下文全部读已落库的 T1~T5
+结果+统计摘要+天气/RAG/ML/工具证据，零判定计算；提供方三级：禁用注入 / 远程
+OpenAI 兼容接口（env 配置，失败降级）/ 本地模板引擎（默认，无外网密钥）
+────────────────────────────────────────
+文件: analysis/report_builder.py
+状态: 新增
+说明: 输入 run_id 聚合全部证据输出七章 Markdown
+报告（判定结果/缺口方案/统计摘要/辅助证据/LLM解释/组件健康状态/完整性声明）
+，异常组件标
+⚠
+────────────────────────────────────────
+文件: backend/main.py
+状态: 修改（仅追加）
+说明: 新增 6 个 GET：4
+
+===PAGE===
+
+个工具接口、/api/explain、/api/reports/{run_id}，原有接口与判定逻辑零改动
+────────────────────────────────────────
+文件: backend/run_store.py
+状态: 修改
+说明: evidence 枚举扩展 tool/llm（第 9、10 类），判定逻辑不变
+────────────────────────────────────────
+文件: analysis/rag_store.py (backend/../analysis/rag_store.py)
+状态: 修改（最小）
+说明: 知识库为空时证据标 unavailable+component_status='degraded'（板块 5
+失效专项需要），查询无匹配仍为 ok+无可靠依据
+────────────────────────────────────────
+文件: analysis/ml_demand_predict.py
+状态: 修改（最小）
+说明: 新增 SUPPLYGUARD_ML_DISABLED=1 故障注入开关
+────────────────────────────────────────
+文件: docs/stage06_test_guide.md
+状态: 新增
+说明: 总验收文档：交付物总览、6.9 Modify→Run→Verify 全链路指引（V1~V5
+核验表）、四类组件降级案例（W/R/M/L+C 组合）、核验 SQL、6.10
+通关画面检查清单（A~F 六组）
+明确的边界声明：
+- 文档中所有「预期结果」均为设计预期，未执行实测，没有伪造任何实测输出
+- 未做：功能运行、接口调用、降级案例执行、SQL 核验、判定隔离实测
+- 语法编译已通过（8 个文件）
+你让我自检时，我会按 stage06_test_guide.md
+的清单逐项执行并核对实测结果，重点覆盖：4 工具+trace 落库、解释四节结构与
+computed_first、报告七章、W/R/M/L 四案例降级、6.9 组合关闭下 T5
+降级分析、T1~T4 判定隔离。
+> 我实测复现了 LLM解释模块降级不一致问题：
+当 SUPPLYGUARD_LLM_URL
+指向无效地址（降级场景 B：远程 LLM服务失联），_remote_explain
+的失败分支返回字典只有 status、error_message，缺少 explanation
+键；下游代码直接读取 result["explanation"]，抛出 KeyError
+崩溃，无法写入 llm证据行，/api/reports 报告接口会返回 500。
+对照测试：降级场景 A（SUPPLYGUARD_LLM_ENABLE=false）返回结构携带 explanation:
+None，可以正常降级、落证据、不崩溃。两个降级场景规范一致，但返回契约不统一。
+修复要求：
+1. 修改 _remote_explain 失败分支的返回字典，强制加上 "explanation":
+None，保证所有降级分支返回结构完全统一。
+2. 远程 LLM 调用失败时保持 status=unavailable，正常写入 evidence_v2的 llm证据记录
+，进程不崩溃、报告接口正常返回降级结果。
+
+===PAGE===
+
+3. 在 LLM/报告测试文档新增 TC，专项校验远程 LLM不可达分支返回字段完整性。
+Thought for 11s (ctrl+o to expand)
+● 先改 _remote_explain 失败分支并统一契约：
+● Update(analysis\llm_explainer.py)
+⎿ Added 4 lines
+278 except (urllib.error.URLError, urllib.error.HTTPError, Tim
+eoutError,
+279 ConnectionError, OSError, ValueError, json.JSONDec
+odeError,
+280 KeyError, TypeError, AttributeError, IndexError) a
+s exc:
+281 + # 降级契约: 与 explain() 其他分支返回结构完全统一
+282 + # (status/provider/explanation/error_message 四键齐全)
++,
+283 + # explanation 恒为 None —— 下游 run_llm_explain 直接索
++引不崩溃
+284 return {"status": "unavailable",
+285 + "explanation": None,
+286 "error_message": "%s: %s" % (type(exc).__name_
+_, exc)}
+287
+288
+● Update(analysis\llm_explainer.py)
+⎿ Added 5 lines, removed 2 lines
+244 def _remote_explain(context: dict) -> dict:
+245 """远程 OpenAI 兼容接口调用 (只解读, 系统提示词已约束不改
+变判定)。
+246
+247 - 返回 {"status": "ok", "explanation": text} 或
+248 - {"status": "unavailable", "error_message": reason}。
+247 + 返回契约 (与 explain() 全部分支统一, 四键齐全):
+248 + {"status": "ok"|"unavailable",
+249 + "explanation": text|None,
+250 + "error_message": str}
+251 + (provider 键由 explain() 统一补齐)。
+252 """
+253 user_content = json.dumps(context, ensure_ascii=False, def
+ault=str)
+254 payload = json.dumps({
+Thought for 4s (ctrl+o to expand)
+● 用之前崩溃的同一命令验证修复效果（远程不可达 + 报告接口）：
+
+===PAGE===
+
+● Bash(cd e:/supplyguard &&
+SUPPLYGUARD_LLM_URL="http://127.0.0.1:9/v1/chat/completions"
+SUPPLYGUARD_LLM_API_KEY="test" PYTHONIOENCODING=utf-8 python
+analysis/llm_expl…)
+⎿ (No output)
+Thought for 3s (ctrl+o to expand)
+● CLI 降级路径已修复。验证证据落库与报告接口在远程失联下的表现：
+● Bash(cd e:/supplyguard &&
+SUPPLYGUARD_LLM_URL="http://127.0.0.1:9/v1/chat/completions"
+SUPPLYGUARD_LLM_API_KEY="test" PYTHONIOENCODING=utf-8 python -c "
+import sys,…)
+⎿ (No output)
+Thought for 5s (ctrl+o to expand)
+● 修复验证全部通过。现在按要求 3 在测试文档新增专项 TC：
+● Update(docs\stage06_test_guide.md)
+⎿ Added 2 lines
+106 - 注入方式 A：`SUPPLYGUARD_LLM_DISABLED=1`（确定性，推荐验收用
+）
+107 - 注入方式 B：`SUPPLYGUARD_LLM_URL` 指向不可达地址（模拟真实调
+用失败路径）
+108 - 预期：`GET /api/explain?run_id=..` HTTP 200，`status='unavai
+lable'`、provider 标明 disabled/remote、error_message 非空；ev
+idence_v2 llm 行 status='unavailable'；报告「五、LLM 解释」显
+示 ⚠ 不可用，其余章节完整；判定无变化。
+109 +- **返回契约专项（TC-LB，缺陷修复回归）**：注入方式 A 与方式 B
++ 的返回结构必须完全统一，四键齐全：
+110 + `status`（恒 'unavailable'）、`provider`（disabled / remote:
++模型名）、`explanation`（恒 null）、`error_message`（非空）+ `
++evidence_id`（证据行落库）。任一键缺失即判失败。
+111
+112 ### 案例 C：组合关闭（对应 6.9）
+113 - 同时注入 W + M + L（RAG 保持在线）：预期报告组件表 weather/M
+L/LLM 三行 ⚠ ，RAG 行正常；T5 结果完整；T1~T4 判定与基线一致。
+● Update(docs\stage06_test_guide.md)
+⎿ Added 1 line
+204 | D2 | RAG 故障 | 注入 R 后查询与报告 | answer=无可靠依据；rag
+证据 status='unavailable'、component_status='degraded'；报告
+rag ⚠ |
+205 | D3 | ML 故障 | 注入 M 后调用与报告 | model_status='unavailab
+le'；ml 证据 status='unavailable'；报告 ml ⚠ |
+
+===PAGE===
+
+206 | D4 | LLM 故障 | 注入 L 后调用与报告 | explain status='unavai
+lable'；llm 证据 status='unavailable'；报告「五」显示 ⚠ 且其余
+章节完整 |
+207 +| D4B | 远程 LLM 不可达字段完整性（TC-LB） | 注入方式 B（`SUPP
++LYGUARD_LLM_URL` 指向不可达地址）后调用 `GET /api/explain`，检
++查返回体与 evidence_v2 最新 llm 行 | HTTP 200 不崩溃；返回体四
++键齐全：status='unavailable'、provider='remote:模型名'、explan
++ation=null、error_message 非空；evidence_v2 落 llm 行 status='
++unavailable' 且 error_message 非空；与方式 A 返回结构完全一致
++（仅 provider 值不同） |
+208 | D5 | 判定隔离 | 每个案例执行 SQL-2 | 三表行数零变化（未 exec
+ute 时） |
+209
+210 ### E. 6.9 全链路（Modify→Run→Verify）
+Thought for 4s (ctrl+o to expand)
+● Bash(cd e:/supplyguard && python -m py_compile analysis/llm_explainer.py &&
+PYTHONIOENCODING=utf-8 python -c "
+import sys…)
+⎿ (No output)
+Thought for 7s (ctrl+o to expand)
+● 发现修复验证中暴露出一个契约缺口：API 返回体里没有 error_message
+键（降级原因只写进了证据行，接口调用方看不到原因），与 TC-LB
+的契约要求不符。补齐：
+● Update(analysis\llm_explainer.py)
+⎿ Error editing file
+Thought for 3s, read 1 file (ctrl+o to expand)
+● Update(analysis\llm_explainer.py)
+⎿ Added 2 lines, removed 2 lines
+320 (降级语义: 判定结论不受影响)
+321 - 解释文本写入 evidence_v2: evidence_type='llm'
+322 返回 (ok, http_status, msg, data);
+323 - data = {run_id, status, provider, explanation, context_sum
+-mary,
+324 - evidence_id}。
+323 + data = {run_id, status, provider, explanation, error_messa
++ge,
+324 + context_summary, evidence_id} (降级分支 error_mess
++age 必非空)。
+325 """
+326 from backend.run_store import save_evidence # 懒加载
+
+===PAGE===
+
+327
+● Update(analysis\llm_explainer.py)
+⎿ Added 1 line
+343 "status": result["status"],
+344 "provider": result["provider"],
+345 "explanation": result["explanation"],
+346 + "error_message": result.get("error_message", "
++"),
+347 "context_summary": {
+348 "tasks": context["tasks"],
+349 "computed_first": context["computed_first"
+],
+● Update(analysis\llm_explainer.py)
+⎿ Added 1 line
+361 "status": result["status"],
+362 "provider": result["provider"],
+363 "explanation": result["explanation"],
+364 + "error_message": result.get("error_message", ""),
+365 "context_summary": {"tasks": context["tasks"],
+366 "computed_first": context["compute
+d_first"]},
+367 "evidence_id": evidence_id,
+Thought for 4s (ctrl+o to expand)
+● Bash(cd e:/supplyguard && python -m py_compile analysis/llm_explainer.py &&
+PYTHONIOENCODING=utf-8 python -c "
+import sys…)
+⎿ (No output)
+Thought for 4s (ctrl+o to expand)
+● 缺陷修复完成，三条路径契约已完全统一。
+代码修改（llm_explainer.py (analysis/llm_explainer.py)）：
+1. _remote_explain 失败分支补 "explanation": None——修复前该分支缺键导致下游
+result["explanation"] KeyError 崩溃（已复现）
+2. run_llm_explain 返回体与 value_json 补 error_message
+键——自检时发现降级原因只落在证据行、接口调用方拿不到，一并补齐
+3. docstring 同步契约说明
+文档修改（stage06_test_guide.md (docs/stage06_test_guide.md)）：
+- 案例 L 新增 TC-LB 返回契约专项：方式 A/B 返回结构必须完全统一，五键齐全（sta
+tus/provider/explanation/error_message/evidence_id），任一键缺失即判失败
+- 6.10 检查清单新增 D4B：远程 LLM 不可达字段完整性检查项
+
+===PAGE===
+
+验证结果（三条路径实测）：
+路径: 修复前复现命令（远程不可达）
+结果: 修复前 KeyError 崩溃；现在 ok=true, status=unavailable,
+provider=remote:gpt-4o-mini, explanation=null, error_message
+非空，证据行落库
+✓
+────────────────────────────────────────
+路径: /api/reports 在远程失联下
+结果: 正常返回，llm 组件标 unavailable、五章标「LLM 解释不可用」、七章齐全 ✓
+────────────────────────────────────────
+路径: 本地默认 / 方式 A 禁用
+结果: 不受影响，五键齐全 ✓
+────────────────────────────────────────
+路径: 判定隔离
+结果: runs/task_results/dependency_checks 零变化（10/24/120）✓

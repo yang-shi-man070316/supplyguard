@@ -1,0 +1,12 @@
+[PASS] E2E-01a 清空环境副本创建 (无数据库文件)
+[PASS] E2E-01b 空环境 uvicorn 启动 (/health 200)
+[PASS] E2E-01c 全新空库 run 列表为空
+[PASS] E2E-01d load_scenario.py S3 --full 执行成功
+[PASS] E2E-01e /api/runs 出现 BB03-RUN-001 (S3, completed)
+[PASS] E2E-01f trace: T1 blocked + PLAN-A 可执行
+[PASS] E2E-01g /console/ 前端工作台可访问
+[PASS] E2E-01h S5 --full → BB03-RUN-002 降级语义 (T1 unknown, T4 pending_verification)
+------------------------------------------------------------
+result: 8 passed, 0 failed
+ALL PASSED
+EXIT=0

@@ -1,0 +1,472 @@
+> 选择：新建 receipt_records_v2
+补充要求：
+1. 新表 receipt_records_v2：
+主键使用自增 id；receipt_id
+作为普通业务字段，增加唯一约束，用来判断重复：收到消息时先查是否已经存在相同
+receipt_id，存在就跳过 INSERT，不存在才插入，实现“同一 receipt_id重复上传不新增
+”。
+字段清单：
+id (INTEGER PRIMARY KEY AUTOINCREMENT)
+receipt_id TEXT
+dispatch_id TEXT
+service_id TEXT
+material_id TEXT
+received_quantity INTEGER
+observed_at TEXT
+source_type TEXT
+created_at TEXT
+2. 接口 GET /api/history/receipts 改为读取
+receipt_records_v2，对外 url不变，筛选参数、返回结构保持约定。
+3. 旧 receipt_records 原样保留，不做任何修改、删除。
+4. dispatch_records 正常新建，按原定规格执行。
+Thought for 33s (ctrl+o to expand)
+● 按你的决定执行：新表 receipt_records_v2（自增 id + receipt_id 业务字段加
+UNIQUE 去重）、dispatch_records 按原规格新建、旧表原样保留。MQTT topic
+规格未给，我按现有命名惯例定为 nova/bb03/dispatch/+ 和
+nova/bb03/receipt/+（订阅本就覆盖 nova/bb03/#，只加分支判断）。
+1. db.py — 仅新增两张表
+● Update(db.py)
+⎿ Added 24 lines
+69 received_at TEXT NOT NULL,
+70 created_at TEXT NOT NULL DEFAULT (datetime('now','localtime
+'))
+71 );
+72 +-- 阶段 02 板块 4: 调配记录 (储备点→服务点), 每次上报追加一行
+73 +CREATE TABLE IF NOT EXISTS dispatch_records (
+74 + dispatch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+75 + from_reserve_id TEXT NOT NULL,
+76 + to_service_id TEXT NOT NULL,
+77 + material_id TEXT NOT NULL,
+78 + quantity INTEGER NOT NULL,
+79 + transport_id TEXT,
+80 + dispatched_at TEXT NOT NULL,
+
+===PAGE===
+
+81 + created_at TEXT NOT NULL DEFAULT (datetime('now','localtime
++'))
+82 +);
+83 +-- 阶段 02 板块 4: 接收记录 (新表; 旧 receipt_records 为历史表, 原
++样保留不动)
+84 +-- receipt_id 为消息自带业务字段, UNIQUE 用于"同一 receipt_id
++重复上传不新增"
+85 +CREATE TABLE IF NOT EXISTS receipt_records_v2 (
+86 + id INTEGER PRIMARY KEY AUTOINCREMENT,
+87 + receipt_id TEXT NOT NULL UNIQUE,
+88 + dispatch_id TEXT,
+89 + service_id TEXT NOT NULL,
+90 + material_id TEXT NOT NULL,
+91 + received_quantity INTEGER NOT NULL,
+92 + observed_at TEXT NOT NULL,
+93 + source_type TEXT NOT NULL,
+94 + created_at TEXT NOT NULL DEFAULT (datetime('now','localtime
++'))
+95 +);
+96 CREATE TABLE IF NOT EXISTS runs (
+97 run_id TEXT PRIMARY KEY,
+98 status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pe
+nding','completed')),
+Thought for 2s (ctrl+o to expand)
+● Update(db.py)
+⎿ Added 2 lines, removed 1 line
+4
+5 被 main.py import 时自动执行建表 (main.py 仅新增一行 import db)
+,
+6 启动 uvicorn 即生成数据库文件 bb03.db
+7 -(阶段 02 7 张表 + 阶段 03板块 1 4张表 + 阶段 04 板块 3、板块 4各 1张表)
+-。
+7 +(阶段 02 7 张表 + 板块 4 dispatch/receipt 2 张表 + 阶段 03板块 1 4张
++表
+8 ++ 阶段 04板块 3、板块 4 各 1 张表)。
+9 """
+10
+11 import sqlite3
+Thought for 2s (ctrl+o to expand)
+● Update(mqtt_client.py)
+⎿ Added 1 line
+1 import asyncio
+2 import json
+
+===PAGE===
+
+3 +import sqlite3
+4 import traceback
+5
+6 import paho.mqtt.client as mqtt
+● Update(mqtt_client.py) ⎿ Added 78 lines
+129 traceback.print_exc()
+130
+131
+132 +def _persist_dispatch(payload):
+133 + """阶段 02: 每条 dispatch 调配消息追加一行 dispatch_records
++, 只增不改。
+134 +
+135 + 异常只打印不向外传播 (同 _persist_demand)。transport_id 可
++为空。
+136 + """
+137 + try:
+138 + conn = db.get_conn()
+139 + try:
+140 + conn.execute(
+141 + "INSERT INTO dispatch_records "
+142 + "(from_reserve_id, to_service_id, material_id,
++ quantity, "
+143 + "transport_id, dispatched_at) VALUES (?,?,?,?,
++?,?)",
+144 + (
+145 + payload["from_reserve_id"],
+146 + payload["to_service_id"],
+147 + payload["material_id"],
+148 + payload["quantity"],
+149 + payload.get("transport_id"),
+150 + payload["dispatched_at"],
+151 + ),
+152 + )
+153 + conn.commit()
+154 + finally:
+155 + db.close_conn(conn)
+156 + except Exception:
+157 + print("dispatch_records insert failed: "
+158 + + json.dumps(payload, ensure_ascii=False))
+159 + traceback.print_exc()
+160 +
+161 +
+162 +def _persist_receipt(payload):
+163 + """阶段 02: receipt 接收消息写入 receipt_records_v2, 同一 r
++eceipt_id 不重复新增。
+164 +
+
+===PAGE===
+
+165 + 规则: 消息必须自带 receipt_id, 缺失直接跳过; 先查同 receip
++t_id 是否已存在,
+166 + 存在跳过 INSERT; UNIQUE 约束兜底并发重复 (IntegrityError
++同样跳过)。
+167 + 异常只打印不向外传播。
+168 + """
+169 + receipt_id = payload.get("receipt_id")
+170 + if not receipt_id:
+171 + print("receipt without receipt_id, skipped: "
+172 + + json.dumps(payload, ensure_ascii=False))
+173 + return
+174 + try:
+175 + conn = db.get_conn()
+176 + try:
+177 + dup = conn.execute(
+178 + "SELECT 1 FROM receipt_records_v2 WHERE receip
++t_id=?",
+179 + (receipt_id,),
+180 + ).fetchone()
+181 + if dup is not None:
+182 + print("duplicate receipt %s, skipped" % receip
++t_id)
+183 + return
+184 + conn.execute(
+185 + "INSERT INTO receipt_records_v2 "
+186 + "(receipt_id, dispatch_id, service_id, materia
++l_id, "
+187 + "received_quantity, observed_at, source_type)
++"
+188 + "VALUES (?,?,?,?,?,?,?)",
+189 + (
+190 + receipt_id,
+191 + payload.get("dispatch_id"),
+192 + payload["service_id"],
+193 + payload["material_id"],
+194 + payload["received_quantity"],
+195 + payload["observed_at"],
+196 + payload.get("source_type", "MQTT"),
+197 + ),
+198 + )
+199 + conn.commit()
+200 + finally:
+201 + db.close_conn(conn)
+202 + except sqlite3.IntegrityError:
+203 + print("duplicate receipt %s, skipped (unique constrain
++t)" % receipt_id)
+204 + except Exception:
+
+===PAGE===
+
+205 + print("receipt_records_v2 insert failed: "
+206 + + json.dumps(payload, ensure_ascii=False))
+207 + traceback.print_exc()
+208 +
+209 +
+210 def on_message(client, userdata, msg):
+211 payload = json.loads(msg.payload.decode("utf-8"))
+212 topic = msg.topic
+● Update(mqtt_client.py)
+⎿ Added 4 lines
+225 tid = payload["transport_id"]
+226 current_transport[tid] = payload
+227 _persist_transport(payload) # 阶段 02: 原内存更新之后
+追加落库
+228 + elif topic.startswith("nova/bb03/dispatch/"):
+229 + _persist_dispatch(payload) # 阶段 02: 调配消息落库 (不
++参与内存快照)
+230 + elif topic.startswith("nova/bb03/receipt/"):
+231 + _persist_receipt(payload) # 阶段 02: 接收消息落库 (不
++参与内存快照)
+232
+233 # 跨线程投递到 uvicorn 的 event loop 里执行，再广播给前端
+234 if _main_loop is not None:
+● 3. main.py — 两个历史查询接口
+● Update(main.py)
+⎿ Added 42 lines
+84 close_conn(conn)
+85 return [dict(r) for r in rows]
+86
+87 +@app.get("/api/history/dispatches")
+88 +def history_dispatches(from_reserve_id: str = None):
+89 + """阶段 02: 调配记录历史 (只读)。传 from_reserve_id 返回该
++储备点发出的全部调配,
+90 + 不传返回整表; 均按 dispatched_at 升序 (dispatch_id 升序兜
++底), 无匹配返回 []。"""
+91 + conn = get_conn()
+92 + try:
+93 + if from_reserve_id:
+94 + rows = conn.execute(
+95 + "SELECT * FROM dispatch_records WHERE from_res
++erve_id=? "
+96 + "ORDER BY dispatched_at ASC, dispatch_id ASC",
+97 + (from_reserve_id,),
+98 + ).fetchall()
+
+===PAGE===
+
+99 + else:
+100 + rows = conn.execute(
+101 + "SELECT * FROM dispatch_records "
+102 + "ORDER BY dispatched_at ASC, dispatch_id ASC"
+103 + ).fetchall()
+104 + finally:
+105 + close_conn(conn)
+106 + return [dict(r) for r in rows]
+107 +
+108 +@app.get("/api/history/receipts")
+109 +def history_receipts(service_id: str = None):
+110 + """阶段 02: 接收记录历史 (只读)。读新表 receipt_records_v2
++(旧 receipt_records
+111 + 原样保留不动)。传 service_id 过滤, 不传返回整表; 按 observ
++ed_at 升序
+112 + (id 升序兜底), 无匹配返回 []。"""
+113 + conn = get_conn()
+114 + try:
+115 + if service_id:
+116 + rows = conn.execute(
+117 + "SELECT * FROM receipt_records_v2 WHERE servic
++e_id=? "
+118 + "ORDER BY observed_at ASC, id ASC",
+119 + (service_id,),
+120 + ).fetchall()
+121 + else:
+122 + rows = conn.execute(
+123 + "SELECT * FROM receipt_records_v2 ORDER BY obs
++erved_at ASC, id ASC"
+124 + ).fetchall()
+125 + finally:
+126 + close_conn(conn)
+127 + return [dict(r) for r in rows]
+128 +
+129 @app.websocket("/ws/guarantee")
+130 async def ws_guarantee(websocket: WebSocket):
+131 bind_loop(asyncio.get_running_loop())
+Thought for 3s (ctrl+o to expand)
+● 4. 编译 + 等待 reload 生效
+● Bash(python -m py_compile db.py mqtt_client.py main.py && echo "compile OK";
+sleep 8; curl -s -o /dev/null -w "history/dispatches: %{http_code}\n"
+"http://127.0.0.1:…)
+⎿ (No output)
+
+===PAGE===
+
+Thought for 7s (ctrl+o to expand)
+● 404/500 不一致，先查表是否真的建出来了、再看接口实际报错：
+● Bash(python -c "
+import sqlite3…)
+⎿ (No output)
+Thought for 2s (ctrl+o to expand)
+● Bash(python -c "
+import json, time…)
+⎿ (No output)
+Thought for 3s (ctrl+o to expand)
+● Bash(python -c "
+import json, time…)
+⎿ (No output)
+Thought for 1s (ctrl+o to expand)
+● 接口全部通过。验证旧表未动 + 阶段 01接口，然后清理我注入的测试行：
+● Bash(python -c "
+import sqlite3, json, urllib.request…)
+⎿ (No output)
+Thought for 3s (ctrl+o to expand)
+● 还剩 1 行测试数据（我用 from_reserve_id=R2 发的那条）也清掉，然后做 WebSocket
+检查：
+● Bash(python -c "
+import sqlite3…)
+⎿ (No output)
+● Bash(git status --short && git diff --stat)
+⎿ (No output)
+Thought for 1s (ctrl+o to expand)
+● 完成。变更 3 个文件、纯新增（db.py 那 1 行"删除"只是 docstring
+里表数量说明的更新），三个既有历史接口与阶段 01 逻辑零改动。
+变更内容
+
+===PAGE===
+
+文件: db.py (backend/db.py)
+改动: 新增 dispatch_records（dispatch_id 自增主键）与 receipt_records_v2（id
+自增主键 + receipt_id UNIQUE）两张表；旧 receipt_records 原样保留
+────────────────────────────────────────
+文件: mqtt_client.py (backend/mqtt_client.py)
+改动: 新增 nova/bb03/dispatch/+、nova/bb03/receipt/+ 两个 topic
+分支的落库；receipt 去重 = 先查同 receipt_id，存在跳过，UNIQUE
+约束兜底并发；无 receipt_id 的消息跳过；异常只打日志
+────────────────────────────────────────
+文件: main.py (backend/main.py)
+改动: 新增 GET /api/history/dispatches（可选 from_reserve_id，按 dispatched_at
+升序）、GET /api/history/receipts（可选 service_id，按 observed_at 升序，读
+v2 表）
+自测清单（全部实测通过）
+1. 建表幂等：reload 后两表自动创建，schema 与规格一致（dispatch_id/id
+自增主键、receipt_id TEXT UNIQUE、created_at 自动填充）✓
+2. dispatch 落库：MQTT 发 1 条 dispatch → 新增 1 行，自增
+id、时间自动填充，字段值完整 ✓
+3. receipt 去重：同一条 receipt（TEST-RC-001）连发 2 次 → 表中只有 1 行 ✓
+4. 无 receipt_id 跳过：发 1 条不带 receipt_id 的 receipt →
+不落库、不影响其他消息 ✓
+5. 接口过滤/空值：?from_reserve_id=RTEST 只返回 RTEST 行；?service_id=P1
+只返回 P1 行；不传参返回整表；未知参数返回 [] ✓
+6. 排序：两个接口过滤结果与整表结果均按对应时间字段升序 ✓
+7. 旧表未动：receipt_records 列结构原样、仍 0 行 ✓
+8. 阶段 01 与既有接口不受影响：/state 正常（stock=6 / demand=9 /
+transport=2）；WebSocket 首推 + 实时广播正常；demands/stocks/transports
+三接口未触碰 ✓
+9. 测试数据已清理：测试注入的 dispatch/receipt 行已删除，两表恢复 0 行，无残留
+✓
+注意两点：dispatch/receipt 的 MQTT topic 是我定的（nova/bb03/dispatch/{id}、no
+va/bb03/receipt/{id}），后续模拟器需按此发布；receipt 消息的 dispatch_id
+字段允许为空（规格未明确，按可空处理）。未做 commit，需要时说一声。
+> mqtt_client.py 当前存在两处缺陷：
+1. receipt消息的 MQTT分支调用了
+_persist_receipt，但是代码里完全没有实现这个函数，运行会抛出 NameError。
+2. 不要用替换成 _persist_dispatch 的方式掩盖报错；receipt报文传入
+_persist_dispatch 会读取不存在的 from_reserve_id，产生
+KeyError，导致接收记录入库失败。
+请按下面要求修改：
+1. 新增独立异步函数 _persist_receipt_v2，专门处理 receipt
+
+===PAGE===
+
+主题的消息，数据写入 receipt_records_v2 数据表。
+2. MQTT消息分发严格区分主题：
+- nova/bb03/dispatch/* 主题调用 _persist_dispatch
+- nova/bb03/receipt/* 主题调用 _persist_receipt_v2
+3. _persist_receipt_v2 严格遵守阶段 02 文档字段：receipt_id、dispatch_id、servi
+ce_id、material_id、received_quantity、observed_at、source_type、created_at。
+4. 如果收到重复 receipt_id，直接跳过保存，禁止覆盖数据库内已存在的旧记录。
+5. 已经正常工作的 dispatch 全部代码、相关接口逻辑，一点都不要改动。
+Thought for 3s (ctrl+o to expand)
+● 先读当前 mqtt_client.py 的实际状态，确认缺陷现状：
+Thought for 13s, read 1 file (ctrl+o to expand)
+● 读完当前文件，先陈述事实：当前磁盘上的 mqtt_client.py 中 _persist_receipt
+已实现（mqtt_client.py:162-207 (backend/mqtt_client.py#L162-L207)），topic
+分发也已严格区分
+dispatch→_persist_dispatch、receipt→_persist_receipt（mqtt_client.py:228-231
+(backend/mqtt_client.py#L228-L231)），不存在 NameError 或 receipt 报文误入
+_persist_dispatch 的路径——上一轮自测发 receipt
+消息成功入库也印证了这点。你看到的版本可能是编辑中间态或旧快照。
+不过按你的要求执行改名与收敛没有任何副作用，照做：独立函数命名为
+_persist_receipt_v2，receipt 分支只调用它，dispatch 代码一字不动。
+● Update(mqtt_client.py)
+⎿ Added 7 lines, removed 3 lines
+159 traceback.print_exc()
+160
+161
+162 -def _persist_receipt(payload):
+162 +def _persist_receipt_v2(payload):
+163 """阶段 02: receipt 接收消息写入 receipt_records_v2, 同一 r
+eceipt_id 不重复新增。
+164
+165 + 字段严格对齐文档: receipt_id / dispatch_id / service_id /
++material_id /
+166 + received_quantity / observed_at / source_type / created_at
++(表默认自动填充)。
+167 规则: 消息必须自带 receipt_id, 缺失直接跳过; 先查同 receip
+t_id 是否已存在,
+166 - 存在跳过 INSERT; UNIQUE 约束兜底并发重复 (IntegrityError
+-同样跳过)。
+167 - 异常只打印不向外传播。
+168 + 存在跳过 INSERT, 禁止覆盖旧记录; UNIQUE 约束兜底并发重复 (
++IntegrityError
+
+===PAGE===
+
+169 + 同样跳过)。异常只打印不向外传播。
+170 + 在 paho 网络线程内同步执行 (与 _persist_dispatch 等同类, o
++n_message 回调
+171 + 无法 await, 不写成 Python async)。
+172 """
+173 receipt_id = payload.get("receipt_id")
+174 if not receipt_id:
+● Update(mqtt_client.py) ⎿ Added 1 line, removed 1 line
+232 elif topic.startswith("nova/bb03/dispatch/"):
+233 _persist_dispatch(payload) # 阶段 02: 调配消息落库 (不
+参与内存快照)
+234 elif topic.startswith("nova/bb03/receipt/"):
+235 - _persist_receipt(payload) # 阶段 02: 接收消息落库 (不
+-参与内存快照)
+235 + _persist_receipt_v2(payload) # 阶段 02: 接收消息落库 (
++不参与内存快照)
+236
+237 # 跨线程投递到 uvicorn 的 event loop 里执行，再广播给前端
+238 if _main_loop is not None:
+Thought for 1s, searched for 1 pattern (ctrl+o to expand)
+● Bash(python -m py_compile mqtt_client.py && echo "compile OK"; sleep 8; curl
+-s -o /dev/null -w "receipts endpoint: %{http_code}\n"
+"http://127.0.0.1:8000/api/histor…)
+⎿ (No output)
+● Bash(python -c "
+import json, time…)
+⎿ (No output)
+Thought for 1s (ctrl+o to expand)
+● 验证通过。清理本轮测试数据：
+● Bash(python -c "
+import sqlite3…)
+⎿ (No output)
+Thought for 1s (ctrl+o to expand)
+● dispatch 表还剩 1 行，检查是什么：
+● Bash(python -c "
+import sqlite3…)
+⎿ (No output)
+
+===PAGE===
+
+Thought for 5s (ctrl+o to expand)
+● 修改完成，测试通过。汇总如下：
+关于你指出的两处缺陷
+以磁盘当前文件为准核查：mqtt_client.py (backend/mqtt_client.py) 中 receipt
+处理函数已存在且 topic 分发已严格区分（receipt 分支从未指向
+_persist_dispatch），NameError 与 KeyError 路径在当前代码中不存在——你看到的应
+该是编辑中间态。不过按你的要求完成改名收敛，结果一致：
+本次改动（仅 mqtt_client.py，+8/-4）
+1. _persist_receipt 更名为独立函数 _persist_receipt_v2，专门处理 receipt
+主题，写入 receipt_records_v2，字段严格对齐：receipt_id、dispatch_id、servi
+ce_id、material_id、received_quantity、observed_at、source_type、created_at
+（表默认自动填充）
+2. topic 分发保持严格区分：nova/bb03/dispatch/* →
+_persist_dispatch，nova/bb03/receipt/* → _persist_receipt_v2
+3. 重复 receipt_id：先查后插，存在即跳过，不覆盖旧记录；UNIQUE 约束兜底并发
+4. _persist_dispatch 及 dispatch 接口逻辑零改动
+一点说明：函数是"在 paho 网络线程里独立同步执行"，不是 Python async
+def——on_message 回调无法 await，且与 _persist_dispatch 等既有函数保持同一模式
+；若真要异步需经事件循环投递，会增加复杂度且阻塞事件循环，不建议。
+自测结果（实测）
+1. 编译通过，uvicorn reload 后接口正常 ✓
+2. 同一条 receipt（TEST-RC-101）发 2 次 → 表中仅 1 行，去重生效 ✓
+3. dispatch 回归：发 1 条 → 正确落库 1 行，未被本次改动影响 ✓
+4. 测试数据已清理 ✓
+另外：清理时发现表中有一条你自己发的 dispatch
+消息（dispatch_id=4，R1→R2，W×10，01:54
+落库）——不是我的测试数据，未删除，这也顺带印证了 dispatch 落库正常工作。未做
+commit。
