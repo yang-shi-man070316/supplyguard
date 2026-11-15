@@ -18,9 +18,10 @@ Commit #1‑#22：早期开发阶段，对业务模型理解出现偏差：
 -  gap缺口计算 + plan候选调配方案可行性判断
 -  review_requests接收复核链路，提交回执自动生成新reality run
 -  原有全部what‑if（视图合成、临时推演、方案管理、快照对比）保持兼容可用
+-  阶段08板块1：S1~S5场景冻结（scenarios/ + load_scenario.py）、整合版前端
+   四视图 + Three.js拓扑视图（frontend/console.html，/console/ 访问）、
+   run trace追溯链路（GET /api/runs/{run_id}/trace）
 
 ## 仍然未实现
 - MQTT模拟器dispatch/receipt消息生成（后续可扩展）
-- 前端工作台、小程序、Three.js可视化
-- RAG/LLM智能分析模块
 ```

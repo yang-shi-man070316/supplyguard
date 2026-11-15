@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>保障任务指挥台 · SupplyGuard 阶段08</title>
+<style>
+:root{
+  --bg:#F1F4F3; --card:#FFFFFF; --ink:#1D2833; --sub:#66747E; --line:#E6EAE8;
+  --shadow:0 1px 2px rgba(29,40,51,.04),0 6px 18px rgba(29,40,51,.06);
+  --r:14px;
+  --cinnabar:#C23B22; --green:#2E7D5B; --amber:#A8721A; --gray:#8A97A3;
+  --blue:#3B6FB5; --lite:#C98A2B; --teal:#1F7A72; --violet:#7C3AED;
+  --num:"Bahnschrift","Segoe UI","PingFang SC",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  background:var(--bg);color:var(--ink);font-size:14px;line-height:1.5;
+  padding:0 20px 44px;
+}
+.num{font-family:var(--num);font-variant-numeric:tabular-nums}
+.wrap{max-width:1160px;margin:0 auto}
+
+/* ===== 顶栏 ===== */
+.masthead{display:flex;justify-content:space-between;align-items:center;gap:16px;
+  flex-wrap:wrap;padding:26px 2px 14px}
+.brand{display:flex;align-items:center;gap:14px}
+.logo{width:44px;height:44px;border-radius:12px;background:var(--ink);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;
+  box-shadow:var(--shadow)}
+.brand h1{font-size:21px;font-weight:700;letter-spacing:.01em;line-height:1.2}
+.brand .sub{color:var(--sub);font-size:13px;margin-top:1px}
+.meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;
+  border-radius:999px;font-size:12.5px;font-weight:600;line-height:1.4}
+.conn i{width:8px;height:8px;border-radius:50%;font-style:normal}
+.conn[data-st="connecting"]{background:#F7F0E1;color:var(--amber)}
+.conn[data-st="connecting"] i{background:var(--amber)}
+.conn[data-st="open"]{background:#E7F2EC;color:var(--green)}
+.conn[data-st="open"] i{background:var(--green)}
+.conn[data-st="closed"]{background:#F9E9E5;color:var(--cinnabar)}
+.conn[data-st="closed"] i{background:var(--cinnabar)}
+.clock{font-family:var(--num);font-size:15px;font-weight:600;color:var(--ink);
+  background:var(--card);border:1px solid var(--line);padding:3px 12px;border-radius:999px}
+
+/* ===== 视图导航 ===== */
+.nav{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 14px}
+.nav a{display:inline-flex;align-items:center;gap:7px;padding:8px 16px;
+  border:1px solid var(--line);border-radius:10px;background:var(--card);
+  color:var(--ink);text-decoration:none;font-size:13px;font-weight:600;
+  transition:border-color .15s,background .15s}
+.nav a:hover{border-color:#c9d2cf}
+.nav a.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.nav a .k{font-family:var(--num);font-size:11px;opacity:.6}
+
+/* ===== 工具条 ===== */
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
+select,input[type=text],button{font:inherit;border:1px solid var(--line);
+  background:var(--card);color:var(--ink);padding:7px 12px;border-radius:8px;font-size:13px}
+button{cursor:pointer;font-weight:600}
+button:hover{border-color:#c9d2cf}
+button.primary{background:var(--ink);border-color:var(--ink);color:#fff}
+button:disabled{opacity:.5;cursor:wait}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;
+  font-size:12px;font-weight:650;border:1px solid var(--line);background:var(--card)}
+.chip .dot{width:7px;height:7px;border-radius:50%;flex:none}
+
+/* ===== 卡片 ===== */
+.card{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);
+  border:1px solid rgba(29,40,51,.05);padding:18px 22px 20px;margin-top:14px}
+.card h2{font-size:13px;font-weight:650;color:var(--sub);letter-spacing:.06em;
+  display:flex;align-items:center;gap:9px;margin-bottom:14px;flex-wrap:wrap}
+.card h2::before{content:"";width:7px;height:7px;border-radius:2.5px;background:var(--ink)}
+.card h2 .hint{font-weight:400;letter-spacing:0;font-size:12px;margin-left:auto}
+
+/* ===== 状态色 ===== */
+.t{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;font-weight:650}
+.t-established,.t-satisfied,.t-executable,.t-ok,.t-completed{background:#E7F2EC;color:var(--green)}
+.t-blocked,.t-unsatisfied,.t-non_executable,.t-error,.t-fault{background:#F9E9E5;color:var(--cinnabar)}
+.t-unknown,.t-pending{background:#EDF1F0;color:var(--gray)}
+.t-pending_verification,.t-unavailable{background:#F7F0E1;color:var(--amber)}
+.t-whatif{background:#E7EFF8;color:var(--blue)}
+.t-reality{background:#E2F1EE;color:var(--teal)}
+
+/* ===== 表格 ===== */
+table{width:100%;border-collapse:collapse}
+th,td{padding:9px 10px;border-bottom:1px solid #F0F3F1;text-align:left;
+  vertical-align:top;font-size:13px}
+th{font-weight:600;font-size:12px;color:var(--sub);white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+tbody tr.click{cursor:pointer}
+tbody tr.click:hover{background:#F6F8F7}
+tr.sel{background:#F0F5F3}
+td.num{font-family:var(--num);font-variant-numeric:tabular-nums}
+code{background:#F2F4F7;padding:1px 6px;border-radius:4px;font-size:12px}
+
+/* ===== 追溯链路 ===== */
+.chain{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 0}
+.chain .seg{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
+  border:1px solid var(--line);border-radius:8px;background:#FBFCFB;font-size:12.5px}
+.chain .seg button{background:none;border:none;padding:0;cursor:pointer;font-size:12.5px;
+  font-weight:650;color:var(--blue);text-decoration:underline dotted}
+.chain .arrow{color:var(--sub)}
+.chain .seg.hl{border-color:var(--ink);background:#fff}
+
+/* ===== 拓扑 ===== */
+#topo{width:100%;height:480px;border-radius:10px;background:#101820;display:block}
+.topo-hint{color:var(--sub);font-size:12px;margin-top:8px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12.5px;color:var(--sub)}
+.legend .it{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.lg-established{background:var(--green)} .lg-unknown{background:var(--gray)}
+.lg-pending_verification{background:var(--amber)} .lg-fault{background:var(--cinnabar)}
+.nodeinfo{position:absolute;display:none;background:#fff;border:1px solid var(--line);
+  border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.25);padding:12px 14px;font-size:12.5px;
+  max-width:340px;z-index:5;pointer-events:none}
+.nodeinfo h3{font-size:13px;margin-bottom:6px}
+.nodeinfo table{margin-top:4px}
+.nodeinfo th,.nodeinfo td{padding:3px 8px;font-size:12px}
+.topo-wrap{position:relative}
+
+/* ===== 对比 ===== */
+.cmp{display:grid;grid-auto-columns:minmax(150px,1fr);grid-auto-flow:column;
+  gap:10px;overflow-x:auto;padding-bottom:6px}
+.cmp .col{border:1px solid var(--line);border-radius:10px;overflow:hidden;min-width:150px}
+.cmp .col .hd{background:#FAFBFB;padding:8px 10px;font-weight:650;font-size:12.5px;
+  border-bottom:1px solid var(--line)}
+.cmp .col .hd small{display:block;font-weight:400;color:var(--sub);font-family:var(--num);font-size:11px}
+.cmp .col .cell{padding:8px 10px;border-bottom:1px solid #F0F3F1;font-size:12.5px}
+.cmp .col .cell .k{color:var(--sub);font-size:11.5px;display:block}
+
+/* ===== 缺口矩阵 ===== */
+.gapcell{border-left:3px solid transparent;padding:2px 0}
+.gapcell .main{font-family:var(--num);font-weight:650}
+.gapcell.gap{border-left-color:var(--cinnabar)}
+.gapcell.neg{color:var(--cinnabar);font-weight:650}
+
+/* ===== 弹层与提示 ===== */
+.toast{position:fixed;right:20px;bottom:20px;background:var(--ink);color:#fff;
+  padding:10px 16px;border-radius:10px;font-size:13px;z-index:50;box-shadow:var(--shadow);
+  display:none}
+.toast.err{background:var(--cinnabar)}
+.empty{margin-top:14px;border:1px dashed var(--line);border-radius:var(--r);
+  background:var(--card);padding:30px 20px;text-align:center;color:var(--sub)}
+.hidden{display:none!important}
+
+@media (max-width:760px){
+  .masthead{flex-direction:column;align-items:flex-start;gap:12px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="brand">
+      <div class="logo">保</div>
+      <div>
+        <h1>保障任务指挥台</h1>
+        <p class="sub">SupplyGuard 四视图 + 拓扑关系视图</p>
+      </div>
+    </div>
+    <div class="meta">
+      <span class="pill conn" id="conn" data-st="connecting"><i></i><span id="connText">连接中</span></span>
+      <span class="clock" id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <nav class="nav" id="nav">
+    <a href="#/overview"><span class="k">①</span>保障任务总览</a>
+    <a href="#/gaps"><span class="k">②</span>需求缺口与依赖</a>
+    <a href="#/evidence"><span class="k">③</span>调配/接收证据与运行</a>
+    <a href="#/plans"><span class="k">④</span>候选方案与场景对比</a>
+    <a href="#/topology"><span class="k">⑤</span>Three.js 拓扑视图</a>
+  </nav>
+
+  <div class="toolbar">
+    <label for="runSel">当前 run</label>
+    <select id="runSel" style="min-width:220px"></select>
+    <button id="btnRefresh" class="primary">刷新</button>
+    <span class="chip" id="runTypeChip"><span class="dot"></span><span>–</span></span>
+    <span class="chip" id="runStatusChip"><span class="dot"></span><span>–</span></span>
+  </div>
+
+  <div id="view"></div>
+
+  <div class="empty hidden" id="loading"><b>加载中…</b><p>正在从后端拉取 run 数据。</p></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="vendor/three.min.js"></script>
+<script src="vendor/OrbitControls.js"></script>
+<script>
+/* ============================================================
+ * API 与全局状态
+ * ============================================================ */
+const API = (location.protocol === "file:") ? "http://127.0.0.1:8000" : "";
+const STATE = { runs: [], traces: {}, selectedRun: null };
+
+function setConn(st, text){
+  document.getElementById("conn").dataset.st = st;
+  document.getElementById("connText").textContent = text;
+}
+function toast(msg, isErr){
+  const el = document.getElementById("toast");
+  el.textContent = msg; el.className = "toast" + (isErr ? " err" : "");
+  el.style.display = "block";
+  clearTimeout(el._t); el._t = setTimeout(() => el.style.display = "none", 3200);
+}
+async function api(path){
+  try{
+    const r = await fetch(API + path);
+    if(!r.ok){ const d = await r.json().catch(()=>({}));
+      throw new Error((d.detail && String(d.detail)) || ("HTTP " + r.status)); }
+    setConn("open", "后端已连接");
+    return await r.json();
+  }catch(e){
+    setConn("closed", "后端失联");
+    throw e;
+  }
+}
+const esc = s => String(s ?? "–").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ============================================================
+ * 状态映射
+ * ============================================================ */
+const T_STATUS = {
+  established:{text:"成立", cls:"t-established", color:0x2E7D5B},
+  blocked:{text:"受阻", cls:"t-blocked", color:0xC23B22},
+  pending_verification:{text:"待验证", cls:"t-pending_verification", color:0xA8721A},
+  unknown:{text:"未知", cls:"t-unknown", color:0x8A97A3},
+};
+const DEP_STATUS = {
+  satisfied:{text:"满足", cls:"t-satisfied", color:0x2E7D5B},
+  unsatisfied:{text:"不满足", cls:"t-unsatisfied", color:0xC23B22},
+  unknown:{text:"未知", cls:"t-unknown", color:0x8A97A3},
+};
+const PLAN_STATUS = {
+  executable:{text:"可执行", cls:"t-executable", color:0x2E7D5B},
+  non_executable:{text:"不可执行", cls:"t-non_executable", color:0xC23B22},
+};
+const EVID_STATUS = {
+  ok:{text:"正常", cls:"t-ok"},
+  unavailable:{text:"取证失败/不可用", cls:"t-unavailable"},
+  error:{text:"异常", cls:"t-error"},
+};
+const RUN_STATUS = {
+  pending:{text:"待执行", cls:"t-pending"},
+  completed:{text:"已完成", cls:"t-completed"},
+};
+const tag = (map, v, fallback) => {
+  const m = (v != null && map[v]) || fallback ||
+    {text: v == null ? "–" : v, cls:"t-unknown"};
+  return `<span class="t ${m.cls}">${esc(m.text)}</span>`;
+};
+const RUN_TYPE_MAP = {
+  reality:{text:"reality 真实运行", cls:"t-reality"},
+  "what-if":{text:"what-if 假设推演", cls:"t-whatif"},
+};
+
+/* ============================================================
+ * 路由 (hash: #/view?run=BB03-RUN-xxx)
+ * ============================================================ */
+const VIEWS = {
+  overview: {title:"保障任务总览", render: renderOverview},
+  gaps:     {title:"需求缺口与依赖", render: renderGaps},
+  evidence: {title:"调配/接收证据与运行", render: renderEvidence},
+  plans:    {title:"候选方案与场景对比", render: renderPlans},
+  topology: {title:"Three.js 拓扑视图", render: renderTopology},
+};
+function parseHash(){
+  const h = location.hash.replace(/^#\/?/, "");
+  const [view, qs] = h.split("?");
+  const params = new URLSearchParams(qs || "");
+  return { view: VIEWS[view] ? view : "overview",
+           run: params.get("run"), focus: params.get("focus") };
+}
+function go(view, run, focus){
+  let h = "#/" + view;
+  const p = new URLSearchParams();
+  if(run) p.set("run", run);
+  if(focus) p.set("focus", focus);
+  const q = p.toString();
+  if(q) h += "?" + q;
+  location.hash = h;
+}
+async function route(){
+  const { view, run } = parseHash();
+  document.querySelectorAll("#nav a").forEach(a =>
+    a.classList.toggle("on", a.getAttribute("href").startsWith("#/" + view)));
+  if(run && run !== STATE.selectedRun){
+    STATE.selectedRun = run;
+    syncRunChips();
+  }
+  document.title = VIEWS[view].title + " · SupplyGuard 阶段08";
+  const el = document.getElementById("view");
+  el.innerHTML = "";
+  if(STATE.runs.length === 0){
+    document.getElementById("loading").classList.remove("hidden");
+    await refreshRuns();
+    document.getElementById("loading").classList.add("hidden");
+  }
+  await VIEWS[view].render(el);
+}
+window.addEventListener("hashchange", route);
+
+/* ============================================================
+ * run 数据
+ * ============================================================ */
+async function refreshRuns(){
+  const runs = await api("/api/runs");
+  STATE.runs = runs;
+  syncRunChips();
+  await preloadTraces();
+  return runs;
+}
+function syncRunChips(){
+  const sel = document.getElementById("runSel");
+  sel.innerHTML = STATE.runs.map(r => {
+    const w = r.run_type === "what-if" ? ` (${esc(r.parent_run_id)}→)` : "";
+    const label = `${esc(r.run_id)} · ${esc(r.scenario_id)} · ${esc(r.run_type)}${w} · ${esc(r.run_status)}`;
+    return `<option value="${esc(r.run_id)}">${label}</option>`;
+  }).join("");
+  if(STATE.selectedRun) sel.value = STATE.selectedRun;
+  sel.onchange = () => {
+    const { view } = parseHash();
+    go(view, sel.value);
+  };
+  const run = STATE.runs.find(r => r.run_id === STATE.selectedRun);
+  const rc = document.getElementById("runTypeChip"), sc = document.getElementById("runStatusChip");
+  if(run){
+    const tm = RUN_TYPE_MAP[run.run_type] || {text:run.run_type, cls:"t-unknown"};
+    rc.innerHTML = `<span class="dot"></span><span>${esc(tm.text)}</span>`;
+    rc.querySelector(".dot").style.background = tm.cls === "t-reality" ? "var(--teal)" : "var(--blue)";
+    sc.innerHTML = `<span class="dot"></span><span>${esc(run.run_id)} · ${esc((RUN_STATUS[run.run_status]||{}).text || run.run_status)}</span>`;
+    sc.querySelector(".dot").style.background = run.run_status === "completed" ? "var(--green)" : "var(--gray)";
+  }else{
+    rc.innerHTML = `<span class="dot"></span><span>未选择 run</span>`;
+    sc.innerHTML = `<span class="dot"></span><span>–</span>`;
+  }
+}
+async function preloadTraces(){
+  const missing = STATE.runs.filter(r => !STATE.traces[r.run_id]);
+  const queue = missing.slice();
+  const worker = async () => {
+    while(queue.length){
+      const r = queue.shift();
+      try{ STATE.traces[r.run_id] = await api(`/api/runs/${r.run_id}/trace`); }
+      catch(e){ STATE.traces[r.run_id] = null; }
+    }
+  };
+  await Promise.all(Array.from({length:6}, worker));
+  if(STATE.selectedRun && !STATE.traces[STATE.selectedRun]){
+    try{ STATE.traces[STATE.selectedRun] =
+      await api(`/api/runs/${STATE.selectedRun}/trace`); }catch(e){}
+  }
+}
+async function traceOf(runId){
+  if(!STATE.traces[runId]){
+    try{ STATE.traces[runId] = await api(`/api/runs/${runId}/trace`); }
+    catch(e){ toast("trace 加载失败: " + e.message, true); return null; }
+  }
+  return STATE.traces[runId];
+}
+function runOf(runId){ return STATE.runs.find(r => r.run_id === runId); }
+
+/* ============================================================
+ * 视图① 保障任务总览
+ * ============================================================ */
+async function renderOverview(el){
+  const stats = summaryStats();
+  el.innerHTML = `
+    <div class="card">
+      <h2>run 汇总 <span class="hint">reality / what-if · 完成 / 待执行</span></h2>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <span class="chip">run 总数 <b>${stats.total}</b></span>
+        <span class="chip t-reality">reality <b>${stats.reality}</b></span>
+        <span class="chip t-whatif">what-if <b>${stats.whatif}</b></span>
+        <span class="chip t-completed">completed <b>${stats.completed}</b></span>
+        <span class="chip t-pending">pending <b>${stats.pending}</b></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>保障任务列表 <span class="hint">点击行展开 run trace 追溯链路</span></h2>
+      <table>
+        <thead><tr>
+          <th>run_id</th><th>场景</th><th>类型</th><th>父基线</th>
+          <th>状态</th><th>T1</th><th>T2</th><th>T3</th><th>T4</th><th>T5</th>
+          <th>创建时间</th>
+        </tr></thead>
+        <tbody>
+        ${STATE.runs.map(r => rowHtml(r)).join("")}
+        </tbody>
+      </table>
+    </div>
+    <div id="chainSlot"></div>`;
+  bindOverview(el);
+}
+function summaryStats(){
+  const s = {total:STATE.runs.length, reality:0, whatif:0, completed:0, pending:0};
+  STATE.runs.forEach(r => {
+    if(r.run_type === "what-if") s.whatif++; else s.reality++;
+    s[r.run_status] = (s[r.run_status]||0) + 1;
+  });
+  return s;
+}
+function rowHtml(r){
+  const t = STATE.traces[r.run_id];
+  const cells = ["T1","T2","T3","T4","T5"].map(tid => {
+    const st = t && t.summary && t.summary[tid];
+    return `<td>${tag(T_STATUS, st, null)}</td>`;
+  }).join("");
+  const cls = r.run_id === STATE.selectedRun ? " sel" : "";
+  return `<tr class="click${cls}" data-run="${esc(r.run_id)}">
+    <td class="num">${esc(r.run_id)}</td>
+    <td>${esc(r.scenario_id)}</td>
+    <td>${tag(RUN_TYPE_MAP, r.run_type, null)}</td>
+    <td class="num">${esc(r.parent_run_id || "–")}</td>
+    <td>${tag(RUN_STATUS, r.run_status, null)}</td>
+    ${cells}
+    <td class="note" style="color:var(--sub);font-size:12px">${esc(r.created_at)}</td>
+  </tr>`;
+}
+async function bindOverview(el){
+  el.querySelectorAll("tr.click").forEach(tr => {
+    tr.addEventListener("click", () => {
+      const rid = tr.dataset.run;
+      go("overview", rid);
+    });
+  });
+  const rid = STATE.selectedRun;
+  if(!rid) return;
+  const t = await traceOf(rid);
+  const slot = document.getElementById("chainSlot");
+  if(!t){ slot.innerHTML = `<div class="empty"><b>trace 不可用</b></div>`; return; }
+  slot.innerHTML = `<div class="card">
+    <h2>Run Trace 追溯链路 <span class="hint">任务 → T状态 → 缺口 → 证据 → 方案，一路下钻</span></h2>
+    ${chainHtml(t)}
+  </div>`;
+}
+function chainHtml(t){
+  const r = t.run;
+  const tasks = t.tasks || [];
+  const blockers = t.blockers || [];
+  const plans = t.plans || [];
+  const evids = t.evidences || [];
+  let html = `<div class="chain">
+    <span class="seg hl">${esc(r.run_id)}<br><small style="color:var(--sub)">${esc(r.scenario_id)} · ${esc(r.run_type)}</small></span>`;
+  tasks.forEach(tk => {
+    html += `<span class="arrow">→</span><span class="seg">${esc(tk.task_id)}
+      ${tag(T_STATUS, tk.result_status, null)}
+      <button title="查看 ${esc(tk.task_id)} 依赖明细"
+        onclick="go('gaps','${esc(r.run_id)}','task=${esc(tk.task_id)}')">依赖</button>
+      </span>`;
+  });
+  html += `<span class="arrow">→</span><span class="seg">缺口
+    ${blockers.length ? blockers.map(b =>
+      `<button onclick="go('gaps','${esc(r.run_id)}','blocker=${esc(b.service_id)}/${esc(b.material_id)}')">${esc(b.service_id)}/${esc(b.material_id)} ${b.gap}</button>`
+    ).join(" ") : '<span style="color:var(--sub)">无</span>'}
+    </span>`;
+  html += `<span class="arrow">→</span><span class="seg">证据
+    ${evids.length ? `<button onclick="go('evidence','${esc(r.run_id)}')">${evids.length} 条关联证据</button>`
+      : '<span style="color:var(--sub)">无关联证据</span>'}
+    </span>`;
+  html += `<span class="arrow">→</span><span class="seg">方案
+    ${plans.length ? plans.map(p =>
+      `<button onclick="go('plans','${esc(r.run_id)}','plan=${esc(p.plan_name)}')">${esc(p.plan_name)} ${esc(p.status||"未判定")}</button>`
+    ).join(" ") : '<span style="color:var(--sub)">未生成方案</span>'}
+    </span></div>`;
+  return html;
+}
+
+/* ============================================================
+ * 视图② 需求缺口与依赖
+ * ============================================================ */
+async function renderGaps(el){
+  const rid = STATE.selectedRun;
+  if(!rid){ el.innerHTML = emptyHtml("请先在顶部选择 run"); return; }
+  const t = await traceOf(rid);
+  if(!t){ el.innerHTML = emptyHtml("trace 加载失败"); return; }
+  const snap = t.snapshot || {};
+  const demands = snap.demands || [], receipts = snap.receipts || [],
+        stocks = snap.stocks || [];
+  const services = [...new Set(demands.map(d=>d.service_id))].sort();
+  const materials = [...new Set(demands.map(d=>d.material_id))].sort();
+  const dem = {}, rec = {};
+  demands.forEach(d => dem[`${d.service_id}|${d.material_id}`] = d);
+  receipts.forEach(rc => {
+    const q = rc.received_quantity;
+    const valid = Number.isInteger(q) && q >= 0 && rc.status !== "unavailable";
+    if(valid) rec[`${rc.service_id}|${rc.material_id}`] =
+      (rec[`${rc.service_id}|${rc.material_id}`]||0) + q;
+  });
+  const stockTotal = {};
+  stocks.forEach(s => stockTotal[s.material_id] = (stockTotal[s.material_id]||0) + (s.quantity||0));
+  const depStatus = {};
+  (t.tasks||[]).forEach(tk => (tk.dependency_checks||[]).forEach(c => {
+    const ev = c.evidence || {};
+    if(ev.service_id && ev.material_id && tk.task_id === "T1")
+      depStatus[`${ev.service_id}|${ev.material_id}`] = c.status;
+  }));
+  const { focus } = parseHash();
+
+  const rows = services.map(sv => {
+    const cells = materials.map(mt => {
+      const k = `${sv}|${mt}`;
+      const d = dem[k];
+      if(!d) return `<td style="color:var(--sub)">–</td>`;
+      const rv = rec[k] || 0;
+      const gap = d.required_quantity - rv;
+      const st = depStatus[k];
+      const isFocus = focus === `blocker=${sv}/${mt}`;
+      return `<td class="gapcell ${gap>0?"gap":""} ${isFocus?"sel":""}">
+        <div class="main">需 ${d.required_quantity} / 收 ${rv}</div>
+        <div class="neg">${gap>0 ? `缺口 ${gap}` : "–"}</div>
+        <div>${tag(DEP_STATUS, st, null)}</div>
+      </td>`;
+    }).join("");
+    return `<tr><td class="num">${esc(sv)}</td>${cells}</tr>`;
+  }).join("");
+  const matHead = materials.map(mt => {
+    const stk = stockTotal[mt] ?? 0;
+    return `<th>${esc(mt)}<small style="display:block;font-weight:400;color:var(--sub)">全网库存 ${stk}</small></th>`;
+  }).join("");
+
+  const blockers = t.blockers || [];
+  const depRows = (t.tasks||[]).flatMap(tk =>
+    (tk.dependency_checks||[]).map(c => {
+      const isFocus = focus === `task=${tk.task_id}`;
+      return `<tr class="${isFocus?"sel":""}">
+        <td class="num">${esc(tk.task_id)}</td>
+        <td class="num">${esc(c.dep_key)}</td>
+        <td>${esc(c.dep_desc||"")}</td>
+        <td>${tag(DEP_STATUS, c.status, null)}</td>
+        <td><code>${esc(typeof c.evidence==="string"?c.evidence:JSON.stringify(c.evidence))}</code></td>
+        <td style="color:var(--sub)">${esc(c.reason||"")}</td>
+      </tr>`;
+    })).join("");
+
+  el.innerHTML = `
+    <div class="card">
+      <h2>需求 / 有效接收 / 缺口 矩阵 <span class="hint">T1-D1 口径: 最新有效签收 vs 当期最低需求</span></h2>
+      <table>
+        <thead><tr><th>服务点</th>${matHead}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:10px;color:var(--sub);font-size:12px">
+        缺口 = 需求 − 有效接收（仅展示口径；权威缺口见下方 blockers：双证据齐全且 gap&gt;0 才成立）。
+      </div>
+    </div>
+    <div class="card">
+      <h2>缺口 blockers <span class="hint">gap_check 落库记录（阶段04 板块1 硬性规则）</span></h2>
+      ${blockers.length ? `<table><thead><tr>
+        <th>服务点</th><th>物资</th><th>需求</th><th>有效接收</th><th>缺口</th><th>描述</th>
+      </tr></thead><tbody>${blockers.map(b => `
+        <tr class="${focus===`blocker=${b.service_id}/${b.material_id}`?"sel":""}">
+          <td class="num">${esc(b.service_id)}</td>
+          <td class="num">${esc(b.material_id)}</td>
+          <td class="num">${b.required_quantity}</td>
+          <td class="num">${b.valid_received}</td>
+          <td class="num neg" style="color:var(--cinnabar);font-weight:650">${b.gap}</td>
+          <td style="color:var(--sub)">${esc((b.reason_json||{}).summary||"")}</td>
+        </tr>`).join("")}</tbody></table>`
+      : `<div class="empty"><b>无 blocker</b><p>双证据齐全且 gap&gt;0 才生成缺口；取证失败不武断算缺口。</p></div>`}
+    </div>
+    <div class="card">
+      <h2>依赖检查明细 dependency_checks <span class="hint">点击总览页 T 芯片可定位到对应任务</span></h2>
+      <table>
+        <thead><tr><th>任务</th><th>依赖键</th><th>描述</th><th>状态</th><th>证据</th><th>理由</th></tr></thead>
+        <tbody>${depRows}</tbody>
+      </table>
+    </div>`;
+}
+function emptyHtml(msg){
+  return `<div class="empty"><b>${esc(msg)}</b><p>选择 run 或等待数据加载后重试。</p></div>`;
+}
+
+/* ============================================================
+ * 视图③ 调配/接收证据与运行
+ * ============================================================ */
+async function renderEvidence(el){
+  const rid = STATE.selectedRun;
+  if(!rid){ el.innerHTML = emptyHtml("请先在顶部选择 run"); return; }
+  const t = await traceOf(rid);
+  if(!t){ el.innerHTML = emptyHtml("trace 加载失败"); return; }
+  const receipts = (t.snapshot||{}).receipts || [];
+  const evids = t.evidences || [];
+  const recRows = receipts.map(rc => {
+    const q = rc.received_quantity;
+    const st = rc.status === "unavailable" ? "unavailable"
+             : rc.status === "ok" ? "ok"
+             : Number.isInteger(q) && q >= 0 ? "ok" : "unknown";
+    return `<tr>
+      <td class="num">${esc(rc.receipt_id)}</td>
+      <td class="num">${esc(rc.dispatch_id||"–")}</td>
+      <td class="num">${esc(rc.service_id)}</td>
+      <td class="num">${esc(rc.material_id)}</td>
+      <td class="num">${q == null ? "–" : q}</td>
+      <td>${tag(EVID_STATUS, st, null)}</td>
+      <td class="num" style="font-size:12px">${esc(rc.observed_at)}</td>
+      <td style="color:var(--sub);font-size:12px">${esc(rc.error_message||rc.status||"")}</td>
+    </tr>`;
+  }).join("");
+  const evRows = evids.map(e => {
+    let brief = "";
+    if(e.evidence_type === "receipt" || e.evidence_type === "dispatch")
+      brief = esc(JSON.stringify(e.value_json||null));
+    else if(e.evidence_type === "tool")
+      brief = esc((e.value_json||{}).tool || "") + " " + esc(JSON.stringify((e.value_json||{}).args||{}));
+    else if(e.evidence_type === "llm")
+      brief = esc(String((e.value_json||{}).explanation||"").slice(0,80)) + "…";
+    return `<tr>
+      <td>${esc(e.evidence_type)}</td>
+      <td class="num">${esc(e.source_id)}</td>
+      <td>${tag(EVID_STATUS, e.status, null)}</td>
+      <td class="num" style="font-size:12px">${esc(e.observed_at)}</td>
+      <td style="font-size:12px"><code>${brief}</code></td>
+      <td style="color:var(--sub);font-size:12px">${esc(e.error_message||"")}</td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `
+    <div class="card">
+      <h2>签收记录（run 快照口径） <span class="hint">unavailable = 取证失败，≠ 未送达</span></h2>
+      <table>
+        <thead><tr><th>receipt_id</th><th>dispatch_id</th><th>服务点</th><th>物资</th>
+          <th>接收量</th><th>取证状态</th><th>时间</th><th>备注</th></tr></thead>
+        <tbody>${recRows || `<tr><td colspan="8" style="color:var(--sub)">无签收记录</td></tr>`}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>与本 run 关联的证据 evidence_v2 <span class="hint">签收/调配直连 + 工具/LLM 轨迹（按 run_id 或 source_id 关联）</span></h2>
+      <table>
+        <thead><tr><th>类型</th><th>source_id</th><th>状态</th><th>时间</th><th>内容</th><th>备注</th></tr></thead>
+        <tbody>${evRows || `<tr><td colspan="6" style="color:var(--sub)">无关联证据</td></tr>`}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>证据溯源链路 <span class="hint">run → T 判定 → 依赖证据 → 签收/调配证据行</span></h2>
+      ${chainHtml(t)}
+      <div style="margin-top:10px;color:var(--sub);font-size:12px">
+        溯源规则：依赖检查 evidence 字段携带 service/material/receipt 信息 →
+        evidence_v2 按 source_id（receipt_id/dispatch_id）直连；工具调用与 LLM
+        解释按 value_json.run_id 关联本 run。
+      </div>
+    </div>
+    <div class="card">
+      <h2>全局证据列表 <span class="hint">GET /api/evidences（含天气/RAG/ML 辅助证据）</span></h2>
+      <div class="toolbar">
+        <label for="evFilter">类型</label>
+        <select id="evFilter">
+          <option value="">全部</option>
+          <option>receipt</option><option>dispatch</option><option>stock</option>
+          <option>transport</option><option>weather</option><option>rag</option>
+          <option>ml</option><option>tool</option><option>llm</option>
+        </select>
+        <label for="evStatus">状态</label>
+        <select id="evStatus"><option value="">全部</option><option>ok</option>
+          <option>unavailable</option><option>error</option></select>
+        <button id="evReload">查询</button>
+      </div>
+      <div id="evGlobal"></div>
+    </div>`;
+  const loadGlobal = async () => {
+    const type = document.getElementById("evFilter").value;
+    const status = document.getElementById("evStatus").value;
+    const qs = new URLSearchParams();
+    if(type) qs.set("evidence_type", type);
+    if(status) qs.set("status", status);
+    let list = [];
+    try{
+      let data = await api("/api/evidences" + (qs.toString() ? "?" + qs : ""));
+      list = data;
+    }catch(e){ toast("全局证据加载失败: " + e.message, true); }
+    document.getElementById("evGlobal").innerHTML = list.length ? `<table>
+      <thead><tr><th>类型</th><th>source_id</th><th>状态</th><th>时间</th><th>内容</th></tr></thead>
+      <tbody>${list.map(e => `<tr>
+        <td>${esc(e.evidence_type)}</td><td class="num">${esc(e.source_id)}</td>
+        <td>${tag(EVID_STATUS, e.status, null)}</td>
+        <td class="num" style="font-size:12px">${esc(e.observed_at)}</td>
+        <td style="font-size:12px"><code>${esc(String(e.value_json||"").slice(0,120))}</code></td>
+      </tr>`).join("")}</tbody></table>`
+      : `<div class="empty"><b>无匹配证据</b></div>`;
+  };
+  document.getElementById("evReload").onclick = loadGlobal;
+  loadGlobal();
+}
+
+/* ============================================================
+ * 视图④ 候选方案与场景对比
+ * ============================================================ */
+async function renderPlans(el){
+  const rid = STATE.selectedRun;
+  if(!rid){ el.innerHTML = emptyHtml("请先在顶部选择 run"); return; }
+  const t = await traceOf(rid);
+  if(!t){ el.innerHTML = emptyHtml("trace 加载失败"); return; }
+  const r = t.run;
+  const plans = t.plans || [];
+  const { focus } = parseHash();
+  const planRows = plans.map(p => {
+    const checks = ((p.reason_json||{}).checks||[]).map(c =>
+      `<div style="font-size:12px;color:${c.passed?"var(--green)":"var(--cinnabar)"}">
+        ${c.passed?"✓":"✗"} ${esc(c.rule)}: ${esc(c.detail)}</div>`).join("");
+    return `<tr class="${focus===`plan=${p.plan_name}`?"sel":""}">
+      <td class="num">${esc(p.plan_name)}</td>
+      <td class="num">${esc(p.reserve_id)} + ${esc(p.vehicle_id)} + ${esc(p.route_id)}</td>
+      <td class="num">${esc(p.material_id)}</td>
+      <td class="num">${p.transfer_qty}</td>
+      <td>${tag(PLAN_STATUS, p.status, {text:"未判定", cls:"t-unknown"})}</td>
+      <td style="color:var(--sub)">${esc((p.reason_json||{}).summary||"")}${checks}</td>
+    </tr>`;
+  }).join("");
+
+  // 同基线 reality vs what-if 对比组
+  const baselineId = r.run_type === "what-if" ? r.parent_run_id : rid;
+  const children = STATE.runs.filter(x =>
+    x.parent_run_id === baselineId && x.run_id !== baselineId);
+  const group = [baselineId, ...children.map(c => c.run_id)];
+  const groupTraces = [];
+  for(const g of group){
+    groupTraces.push({ runId: g, trace: g === rid ? t : await traceOf(g) });
+  }
+  const cmpCols = groupTraces.map(({runId, trace}) => {
+    if(!trace) return `<div class="col"><div class="hd">${esc(runId)}<small>trace 不可用</small></div></div>`;
+    const g = trace.run;
+    const verdict = name => {
+      const p = (trace.plans||[]).find(x => x.plan_name === name);
+      return tag(PLAN_STATUS, p && p.status, {text:"–", cls:"t-unknown"});
+    };
+    const ts = name => tag(T_STATUS, trace.summary && trace.summary[name], null);
+    const ass = g.assumptions_json && Object.keys(g.assumptions_json).length
+      ? JSON.stringify(g.assumptions_json) : null;
+    return `<div class="col">
+      <div class="hd">${esc(g.scenario_id)} · ${esc(g.run_type)}
+        <small>${esc(runId)}${ass ? `<br>假设 ${esc(ass)}` : ""}</small></div>
+      ${["PLAN-A","PLAN-B","PLAN-C"].map(n =>
+        `<div class="cell"><span class="k">${n}</span>${verdict(n)}</div>`).join("")}
+      ${["T1","T2","T3","T4","T5"].map(n =>
+        `<div class="cell"><span class="k">${n}</span>${ts(n)}</div>`).join("")}
+    </div>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div class="card">
+      <h2>候选方案判定 <span class="hint">run ${esc(rid)} · 固定三套调拨方案（W 物资）</span></h2>
+      ${plans.length ? `<table><thead><tr>
+        <th>方案</th><th>组合</th><th>物资</th><th>调拨量</th><th>判定</th><th>理由</th>
+      </tr></thead><tbody>${planRows}</tbody></table>`
+      : `<div class="empty"><b>未生成候选方案</b><p>候选方案由 W 物资 blocker 缺口驱动（gap_check → plan_store）。</p></div>`}
+    </div>
+    <div class="card">
+      <h2>同基线对比：reality vs what-if <span class="hint">基线 ${esc(baselineId)} 及其全部 what-if 子运行并排对比</span></h2>
+      <div class="cmp">${cmpCols}</div>
+      ${children.length ? "" : `<div style="margin-top:10px;color:var(--sub);font-size:12px">
+        该 run 无 what-if 子运行。可用 load_scenario.py --whatif 推演后回来对比。</div>`}
+    </div>`;
+}
+
+/* ============================================================
+ * 视图⑤ Three.js 拓扑视图
+ * ============================================================ */
+let topoApp = null;
+async function renderTopology(el){
+  el.innerHTML = `
+    <div class="card">
+      <h2>拓扑关系视图 <span class="hint">固定元素: 储备点 R1/R2 · 服务点 P1/P2/P3 · 固定候选投送连线</span></h2>
+      <div class="topo-wrap">
+        <canvas id="topo"></canvas>
+        <div class="nodeinfo" id="nodeInfo"></div>
+      </div>
+      <div class="legend">
+        <span class="it"><i class="lg-established"></i>established 正常/成立</span>
+        <span class="it"><i class="lg-unknown"></i>unknown 未知</span>
+        <span class="it"><i class="lg-pending_verification"></i>pending_verification 待验证</span>
+        <span class="it"><i class="lg-fault"></i>fault/不可用</span>
+        <span class="it" style="margin-left:8px">服务点颜色 = T1-D1 依赖状态；储备点颜色 = 库存可用性；连线颜色 = T2 运输链路状态</span>
+      </div>
+      <div class="topo-hint" id="topoHint">拖动旋转视角，滚轮缩放；点击节点查看简要信息。</div>
+    </div>`;
+  const canvas = document.getElementById("topo");
+  if(typeof THREE === "undefined"){
+    canvas.outerHTML = `<div class="empty"><b>Three.js 未加载</b>
+      <p>本地 vendor/three.min.js 缺失且无法访问 CDN，请检查 frontend/vendor/ 目录。</p></div>`;
+    return;
+  }
+  if(!topoApp) topoApp = createTopoApp(canvas);
+  window.__topoApp = topoApp;
+  topoApp.resize();
+  const t = STATE.selectedRun ? await traceOf(STATE.selectedRun) : null;
+  topoApp.setRun(t);
+}
+function createTopoApp(canvas){
+  const renderer = new THREE.WebGLRenderer(
+    {canvas, antialias:true, preserveDrawingBuffer:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x101820);
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  camera.position.set(0, 7.5, 11.5);
+  camera.lookAt(0, 0, 0);
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true; controls.target.set(0,0,0); controls.maxPolarAngle = Math.PI/2.2;
+
+  // 固定几何: 储备点 R1/R2 (左), 服务点 P1/P2/P3 (右), 6 条固定候选投送连线
+  const NODE_DEF = {
+    R1:{x:-4.6,z: 1.6,kind:"reserve"}, R2:{x:-4.6,z:-1.6,kind:"reserve"},
+    P1:{x: 4.6,z: 2.4,kind:"service"}, P2:{x: 4.6,z: 0.0,kind:"service"},
+    P3:{x: 4.6,z:-2.4,kind:"service"},
+  };
+  const RESERVES = ["R1","R2"], SERVICES = ["P1","P2","P3"];
+  const nodes = {}, lines = [];
+  const group = new THREE.Group(); scene.add(group);
+
+  function labelSprite(text){
+    const c = document.createElement("canvas"); c.width = 256; c.height = 96;
+    const g = c.getContext("2d");
+    g.fillStyle = "rgba(255,255,255,0.94)"; g.font = "600 44px 'Segoe UI','Microsoft YaHei',sans-serif";
+    g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText(text, 128, 48);
+    const tex = new THREE.CanvasTexture(c);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, depthTest:false}));
+    sp.scale.set(1.5, 0.56, 1);
+    return sp;
+  }
+  Object.entries(NODE_DEF).forEach(([id, d]) => {
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.34, 24, 24),
+      new THREE.MeshStandardMaterial({color:0x8A97A3, roughness:.35, metalness:.1}));
+    mesh.position.set(d.x, 0, d.z);
+    mesh.userData = {id, kind:d.kind};
+    const lbl = labelSprite(id);
+    lbl.position.set(d.x, 0.85, d.z);
+    group.add(mesh); group.add(lbl);
+    nodes[id] = {mesh, lbl, def:d};
+  });
+  RESERVES.forEach(rv => SERVICES.forEach(sv => {
+    const a = NODE_DEF[rv], b = NODE_DEF[sv];
+    const pts = [];
+    const steps = 12;
+    for(let i=0;i<=steps;i++){
+      const tt = i/steps, x = a.x + (b.x-a.x)*tt;
+      const z = a.z + (b.z-a.z)*tt;
+      const y = 0.25*Math.sin(Math.PI*tt);
+      pts.push(new THREE.Vector3(x, y, z));
+    }
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({color:0x8A97A3, transparent:true, opacity:.75}));
+    line.userData = {from:rv, to:sv};
+    group.add(line);
+    lines.push(line);
+  }));
+  group.add(new THREE.AmbientLight(0xffffff, .75));
+  const dl = new THREE.DirectionalLight(0xffffff, .9); dl.position.set(5,10,7); group.add(dl);
+
+  // 节点 → 状态聚合 (纯展示: 直接取自 run trace 的既有判定行, 不新增判定逻辑)
+  function statusOf(nodeId, trace){
+    if(!trace) return {key:"unknown", color:0x8A97A3};
+    const snap = trace.snapshot || {};
+    if(NODE_DEF[nodeId].kind === "reserve"){
+      const rows = (snap.stocks||[]).filter(s => s.reserve_id === nodeId);
+      if(!rows.length) return {key:"unknown", color:0x8A97A3};
+      const zero = rows.some(s => !(s.quantity > 0));
+      return zero ? {key:"fault", color:0xC23B22} : {key:"established", color:0x2E7D5B};
+    }
+    // 服务点: 聚合 T1-D1 依赖检查状态 (satisfied/unsatisfied/unknown)
+    const t1 = (trace.tasks||[]).find(x => x.task_id === "T1");
+    const sts = (t1 && t1.dependency_checks || []).filter(c =>
+      (c.evidence||{}).service_id === nodeId).map(c => c.status);
+    if(!sts.length) return {key:"unknown", color:0x8A97A3};
+    if(sts.includes("unsatisfied")) return {key:"fault", color:0xC23B22};
+    if(sts.includes("unknown"))
+      return sts.includes("satisfied")
+        ? {key:"pending_verification", color:0xA8721A}
+        : {key:"unknown", color:0x8A97A3};
+    return {key:"established", color:0x2E7D5B};
+  }
+  function t2Status(trace){
+    if(!trace) return {key:"unknown", color:0x8A97A3};
+    const st = trace.summary && trace.summary.T2;
+    const map = {established:0x2E7D5B, blocked:0xC23B22, unknown:0x8A97A3};
+    return {key: st || "unknown", color: map[st] || 0x8A97A3};
+  }
+
+  // 渲染循环: 更新相机矩阵与 mesh matrixWorld, 保证渲染与射线检测一致
+  (function animate(){
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  })();
+
+  const info = document.getElementById("nodeInfo");
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  let currentTrace = null;
+  function nodeInfoHtml(id){
+    const trace = currentTrace, snap = (trace && trace.snapshot) || {};
+    const def = NODE_DEF[id];
+    if(def.kind === "reserve"){
+      const rows = (snap.stocks||[]).filter(s => s.reserve_id === id);
+      return `<h3>储备点 ${esc(id)}</h3>
+        <table><thead><tr><th>物资</th><th>库存</th></tr></thead><tbody>
+        ${rows.map(s => `<tr><td class="num">${esc(s.material_id)}</td><td class="num">${s.quantity}</td></tr>`).join("") || '<tr><td colspan="2" style="color:var(--sub)">无库存观测</td></tr>'}
+        </tbody></table>`;
+    }
+    const t1 = (trace && trace.tasks || []).find(x => x.task_id === "T1");
+    const checks = (t1 && t1.dependency_checks || []).filter(c =>
+      (c.evidence||{}).service_id === id);
+    const blk = (trace && trace.blockers || []).filter(b => b.service_id === id);
+    return `<h3>服务点 ${esc(id)}</h3>
+      <table><thead><tr><th>物资</th><th>T1-D1</th></tr></thead><tbody>
+      ${checks.map(c => `<tr><td class="num">${esc((c.evidence||{}).material_id)}</td>
+        <td>${tag(DEP_STATUS, c.status, null)}</td></tr>`).join("") || '<tr><td colspan="2" style="color:var(--sub)">无需求观测</td></tr>'}
+      </tbody></table>
+      ${blk.length ? `<div style="margin-top:4px;color:var(--cinnabar)">缺口: ${blk.map(b => `${esc(b.material_id)} ${b.gap}`).join(" · ")}</div>` : ""}`;
+  }
+  canvas.addEventListener("mousemove", e => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = ((e.clientX-rect.left)/rect.width)*2 - 1;
+    mouse.y = -((e.clientY-rect.top)/rect.height)*2 + 1;
+  });
+  canvas.addEventListener("click", () => {
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(Object.values(nodes).map(n => n.mesh));
+    if(hits.length){
+      const id = hits[0].object.userData.id;
+      info.innerHTML = nodeInfoHtml(id);
+      info.style.display = "block";
+      const rect = canvas.getBoundingClientRect();
+      info.style.left = Math.min(rect.width - 350, Math.max(8, rect.left + 0)) + "px";
+      info.style.top = "12px";
+    }else info.style.display = "none";
+  });
+
+  function setRun(trace){
+    currentTrace = trace;
+    const t2 = t2Status(trace);
+    lines.forEach(l => { l.material.color.setHex(t2.color);
+      l.material.opacity = trace ? .8 : .35; });
+    Object.entries(nodes).forEach(([id, n]) => {
+      const st = statusOf(id, trace);
+      n.mesh.material.color.setHex(st.color);
+    });
+    const hint = document.getElementById("topoHint");
+    if(hint){
+      hint.textContent = trace
+        ? `当前 run ${trace.run_id}（${trace.run.scenario_id} · ${trace.run.run_type}）: T2 运输链路 = ${t2.key}; 节点颜色见右侧图例。`
+        : "未选择 run：全部节点呈 unknown 灰。选择 run 后拓扑同步刷新。";
+    }
+    info.style.display = "none";
+  }
+  return {
+    resize(){
+      const w = canvas.clientWidth || 800;
+      renderer.setSize(w, 480, false);
+      camera.aspect = w / 480;
+      camera.updateProjectionMatrix();
+    },
+    setRun,
+    /* 节点屏幕坐标 (canvas CSS 像素), 供 UI 测试/调试点击定位 */
+    screenPosOf(id){
+      const n = nodes[id];
+      if(!n) return null;
+      const v = n.mesh.position.clone().project(camera);
+      const rect = canvas.getBoundingClientRect();
+      return { x: (v.x + 1) / 2 * rect.width, y: (-v.y + 1) / 2 * rect.height };
+    },
+  };
+}
+
+/* ============================================================
+ * 时钟与启动
+ * ============================================================ */
+function tick(){
+  const el = document.getElementById("clock");
+  if(el) el.textContent = new Date().toTimeString().slice(0,8);
+}
+setInterval(tick, 1000); tick();
+
+document.getElementById("btnRefresh").onclick = async () => {
+  toast("刷新 run 列表与 trace 缓存…");
+  STATE.traces = {};
+  try{
+    await refreshRuns();
+    const { view } = parseHash();
+    go(view, STATE.selectedRun);
+    route();
+  }catch(e){ toast("刷新失败: " + e.message, true); }
+};
+
+setConn("connecting", "连接中");
+route().catch(e => {
+  document.getElementById("loading").classList.add("hidden");
+  toast("初始化失败: " + e.message, true);
+});
+</script>
+</body>
+</html>

@@ -9,6 +9,8 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # 阶段06板块2: 把项目根加入 sys.path, 使 backend 下运行时也能 import
@@ -30,6 +32,7 @@ from mqtt_client import ws_connections, bind_loop, current_snapshot
 from plan_store import get_plans_with_results
 from review_store import create_review, get_pending_reviews
 from run_store_v2 import _capture_snapshot, create_run, get_run, list_runs
+from run_trace import get_run_trace
 from task_execute import run_execute_all
 from t1_check import get_task_result
 
@@ -286,6 +289,22 @@ def api_get_run(run_id: str):
     if run is None:
         raise HTTPException(status_code=404, detail="run %s not found" % run_id)
     return run
+
+
+@app.get("/api/runs/{run_id}/trace")
+def api_get_run_trace(run_id: str):
+    """run 追溯链路 (阶段08板块1, 只读聚合, 不新增判定逻辑)。
+
+    一次拉齐「任务 → T状态 → 缺口 → 证据 → 方案」下钻链路:
+        run / summary(T1~T5) / tasks(依赖明细) / blockers /
+        evidences(与本 run 关联的 evidence_v2 证据) / plans(判定) /
+        snapshot(五段业务快照, 供前端缺口与依赖视图渲染)。
+    run_id 不存在 → 404。详见 run_trace.get_run_trace。
+    """
+    ok, http_status, msg, data = get_run_trace(run_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
 
 
 # ============================================================
@@ -801,3 +820,20 @@ async def ws_guarantee(websocket: WebSocket):
         pass
     finally:
         ws_connections.discard(websocket)
+
+
+# ============================================================
+# 阶段08板块1: 整合版前端静态挂载 (只新增, 不影响既有接口)
+# - 浏览器访问 http://127.0.0.1:8000/console/ 即打开四视图+拓扑工作台
+#   (索引显式指向 console.html, 避免被目录内旧 index.html 抢占)
+# - frontend/ 下原有 index.html / Dashboard.html / Verify.html 原样保留
+# ============================================================
+_FRONTEND_DIR = _PROJECT_ROOT / "frontend"
+if _FRONTEND_DIR.is_dir():
+    @app.get("/console", include_in_schema=False)
+    @app.get("/console/", include_in_schema=False)
+    def _console_index():
+        return FileResponse(_FRONTEND_DIR / "console.html")
+
+    app.mount("/console", StaticFiles(directory=str(_FRONTEND_DIR)),
+              name="console")

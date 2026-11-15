@@ -1,0 +1,48 @@
+{
+  "scenario_id": "S2",
+  "name": "S2 缺口识别场景（基于 S1 基线，聚焦双证据齐全且 gap>0 的 blocker 生成）",
+  "stage": "阶段04 板块1",
+  "frozen_at": "2026-11-15",
+  "frozen_note": "S2 复用 S1 既定基线（需求/库存/运输/签收数值完全一致），判定聚焦 gap_check 缺口识别。本文件为冻结场景快照，禁止直接修改；现场变量调整统一走 load_scenario.py 的 input_overrides（reality）/ assumptions（what-if）覆盖。",
+  "baseline_run_refs": {
+    "reality": "BB03-RUN-010",
+    "gap_check": "BB03-RUN-006"
+  },
+  "baseline": {
+    "stocks": [
+      {"reserve_id": "R1", "material_id": "L", "quantity": 2, "observed_at": "2026-11-14 17:26:58", "created_at": "2026-11-14 18:06:58"},
+      {"reserve_id": "R1", "material_id": "R", "quantity": 8, "observed_at": "2026-11-14 17:26:58", "created_at": "2026-11-14 18:06:58"},
+      {"reserve_id": "R1", "material_id": "W", "quantity": 2, "observed_at": "2026-11-14 17:26:58", "created_at": "2026-11-14 18:06:58"},
+      {"reserve_id": "R2", "material_id": "L", "quantity": 5, "observed_at": "2026-11-14 17:26:58", "created_at": "2026-11-14 18:06:58"},
+      {"reserve_id": "R2", "material_id": "R", "quantity": 4, "observed_at": "2026-11-14 17:26:58", "created_at": "2026-11-14 18:06:58"},
+      {"reserve_id": "R2", "material_id": "W", "quantity": 8, "observed_at": "2026-11-14 17:26:58", "created_at": "2026-11-14 18:06:58"}
+    ],
+    "demands": [
+      {"service_id": "P1", "material_id": "L", "required_quantity": 1, "observed_at": "2026-11-14 17:36:58", "created_at": "2026-11-14 18:06:58"},
+      {"service_id": "P1", "material_id": "R", "required_quantity": 2, "observed_at": "2026-11-14 17:36:58", "created_at": "2026-11-14 18:06:58"},
+      {"service_id": "P1", "material_id": "W", "required_quantity": 4, "observed_at": "2026-11-14 17:36:58", "created_at": "2026-11-14 18:06:58"},
+      {"service_id": "P2", "material_id": "L", "required_quantity": 5, "observed_at": "2026-11-14 17:36:58", "created_at": "2026-11-14 18:06:58"},
+      {"service_id": "P2", "material_id": "R", "required_quantity": 3, "observed_at": "2026-11-14 17:36:58", "created_at": "2026-11-14 18:06:58"},
+      {"service_id": "P2", "material_id": "W", "required_quantity": 5, "observed_at": "2026-11-14 17:36:58", "created_at": "2026-11-14 18:06:58"},
+      {"service_id": "P3", "material_id": "L", "required_quantity": 8, "observed_at": "2026-11-14 17:36:58", "created_at": "2026-11-14 18:06:58"},
+      {"service_id": "P3", "material_id": "R", "required_quantity": 2, "observed_at": "2026-11-14 17:36:58", "created_at": "2026-11-14 18:06:58"},
+      {"service_id": "P3", "material_id": "W", "required_quantity": 6, "observed_at": "2026-11-14 17:36:58", "created_at": "2026-11-14 18:06:58"}
+    ],
+    "transports": [
+      {"transport_id": "V1", "availability": "AVAILABLE", "capacity": 4, "observed_at": "2026-11-14 17:46:58", "created_at": "2026-11-14 18:06:58"},
+      {"transport_id": "V2", "availability": "AVAILABLE", "capacity": 4, "observed_at": "2026-11-14 17:46:58", "created_at": "2026-11-14 18:06:58"}
+    ],
+    "receipts": [
+      {"receipt_id": "RCT-S1-001", "dispatch_id": null, "service_id": "P1", "material_id": "W", "received_quantity": 2, "observed_at": "2026-11-14 17:56:58", "created_at": "2026-11-14 18:06:58"},
+      {"receipt_id": "RCT-S1-002", "dispatch_id": null, "service_id": "P2", "material_id": "L", "received_quantity": 2, "observed_at": "2026-11-14 17:56:58", "created_at": "2026-11-14 18:06:58"},
+      {"receipt_id": "RCT-S1-003", "dispatch_id": null, "service_id": "P3", "material_id": "R", "received_quantity": 2, "observed_at": "2026-11-14 17:56:58", "created_at": "2026-11-14 18:06:58"}
+    ]
+  },
+  "expected": {
+    "blockers": [
+      {"service_id": "P1", "material_id": "W", "required_quantity": 4, "valid_received": 2, "gap": 2},
+      {"service_id": "P2", "material_id": "L", "required_quantity": 5, "valid_received": 2, "gap": 3}
+    ],
+    "blockers_note": "硬性规则：P3/W（无签收证据）与 P3/L（无签收证据）不生成 blocker——双证据齐全且 gap>0 才生成；P3/R 签收 2 恰好满足需求 2，gap=0 不生成。"
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "scenario_id": "S4",
+  "name": "S4 what-if 假设推演场景（S3 基线 + 三组标准假设推演）",
+  "stage": "阶段07 板块1",
+  "frozen_at": "2026-11-15",
+  "frozen_note": "S4 以 S3 冻结基线为 reality 基线（历史基准 BB03-RUN-011），通过 what-if 假设叠加推演，假设绝不写回基线。三组标准假设与历史运行 BB03-RUN-012/014/015 一一对应。本文件为冻结场景快照，禁止直接修改；现场变量调整统一走 load_scenario.py 的 input_overrides（reality）/ assumptions（what-if）覆盖。",
+  "baseline_run_refs": {
+    "reality": "BB03-RUN-011",
+    "whatif": {
+      "whatif-A": "BB03-RUN-012",
+      "whatif-B": "BB03-RUN-014",
+      "whatif-C": "BB03-RUN-015"
+    }
+  },
+  "baseline": {
+    "stocks": [
+      {"reserve_id": "R1", "material_id": "W", "quantity": 6, "observed_at": "2026-11-15T10:00:00", "created_at": "2026-11-15 10:00:00"},
+      {"reserve_id": "R2", "material_id": "W", "quantity": 5, "observed_at": "2026-11-15T10:00:00", "created_at": "2026-11-15 10:00:00"}
+    ],
+    "demands": [
+      {"service_id": "P1", "material_id": "W", "required_quantity": 7, "observed_at": "2026-11-15T08:00:00", "created_at": "2026-11-15 08:00:00"}
+    ],
+    "transports": [
+      {"transport_id": "V1", "availability": "AVAILABLE", "capacity": 4, "observed_at": "2026-11-15T10:00:00", "created_at": "2026-11-15 10:00:00"},
+      {"transport_id": "V2", "availability": "FAULT", "capacity": 4, "observed_at": "2026-11-15T10:00:00", "created_at": "2026-11-15 10:00:00"}
+    ],
+    "receipts": [
+      {"receipt_id": "RCT-S3-001", "dispatch_id": "DSP-S3-001", "service_id": "P1", "material_id": "W", "received_quantity": 3, "observed_at": "2026-11-15T09:00:00", "created_at": "2026-11-15 09:00:00"}
+    ],
+    "routes": [
+      {"route_id": "route-A", "status": "available", "duration_min": 20},
+      {"route_id": "route-B", "status": "available", "duration_min": 20},
+      {"route_id": "route-C", "status": "available", "duration_min": 40}
+    ],
+    "remaining_time": 30
+  },
+  "standard_assumptions": {
+    "whatif-A": {
+      "label": "推演A：V2 修复（FAULT → AVAILABLE）",
+      "assumptions": {"transport.V2.availability": "AVAILABLE"},
+      "expected_plan_verdicts": {
+        "PLAN-A": "executable",
+        "PLAN-B": "executable",
+        "PLAN-C": "non_executable"
+      }
+    },
+    "whatif-B": {
+      "label": "推演B：时限放宽（remaining_minutes 30 → 50）",
+      "assumptions": {"remaining_minutes": 50},
+      "expected_plan_verdicts": {
+        "PLAN-A": "executable",
+        "PLAN-B": "non_executable",
+        "PLAN-C": "executable"
+      }
+    },
+    "whatif-C": {
+      "label": "推演C：R1/W 库存削减（6 → 2）",
+      "assumptions": {"stock.R1.W": 2},
+      "expected_plan_verdicts": {
+        "PLAN-A": "non_executable",
+        "PLAN-B": "non_executable",
+        "PLAN-C": "non_executable"
+      }
+    }
+  },
+  "expected": {
+    "tasks": {
+      "T1": "blocked",
+      "T2": "established",
+      "T3": "established",
+      "T4": "established",
+      "T5": "established"
+    },
+    "blockers": [
+      {"service_id": "P1", "material_id": "W", "required_quantity": 7, "valid_received": 3, "gap": 4}
+    ],
+    "plan_verdicts": {
+      "PLAN-A": "executable",
+      "PLAN-B": "non_executable",
+      "PLAN-C": "non_executable"
+    },
+    "note": "expected 为 S4 的 reality 基线（S3 条件）预期；三组标准推演的预期见 standard_assumptions.*.expected_plan_verdicts。"
+  }
+}
