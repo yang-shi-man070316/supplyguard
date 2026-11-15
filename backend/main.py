@@ -23,7 +23,7 @@ from analysis.rag_store import run_rag_query
 from analysis.report_builder import build_report
 from analysis.weather_evidence import run_weather_evidence
 import ai_tools
-from constants import RUN_TYPE
+from constants import RUN_TYPE, RUN_TYPES, RUN_TYPE_WHATIF
 from db import close_conn, get_conn, next_run_id
 from gap_check import get_blockers
 from mqtt_client import ws_connections, bind_loop, current_snapshot
@@ -218,29 +218,56 @@ def list_evidences(evidence_type: str = None, source_id: str = None):
 # ============================================================
 
 class RunCreate(BaseModel):
-    """POST /api/runs 入参。"""
+    """POST /api/runs 入参 (阶段07板块1 起支持 what-if)。
+
+    reality (默认): parent_run_id/assumptions 不接受;
+    what-if: parent_run_id 必填 (reality 基线), assumptions 必填
+    (假设 key 语法见 run_store_v2.apply_assumptions)。
+    """
     scenario_id: str
     parent_run_id: str = None
     run_type: str = RUN_TYPE
+    assumptions: Optional[dict] = None
 
 
 @app.post("/api/runs", status_code=201)
 def api_create_run(body: RunCreate):
-    """创建 S1 reality run。
+    """创建 run (reality / what-if 两类)。
 
-    - run_id 自动生成 (BB03-RUN-001/002/... 自增)
-    - 抓取当前时刻服务点/物资/需求/接收数据冻结进 input_snapshot_json
-    - assumptions_json 初始为空 JSON 对象 {}
-    - run_status=pending; parent_run_id 默认 null; created_at 自动写入
+    reality:
+        - run_id 自动生成 (BB03-RUN-001/002/... 自增)
+        - 抓取当前时刻服务点/物资/需求/接收数据冻结进 input_snapshot_json
+        - assumptions_json 初始为空 JSON 对象 {}
+    what-if (阶段07板块1):
+        - parent_run_id 指向基线 reality run; 深拷贝 parent 快照并在副本
+          上叠加 assumptions, 假设绝不写回 parent (parent 只读)
+        - assumptions 存 assumptions_json; 自身快照独立冻结
+    - run_status=pending; created_at 自动写入
     """
     if not body.scenario_id.strip():
         raise HTTPException(status_code=400, detail="scenario_id required")
-    if body.run_type != RUN_TYPE:
+    if body.run_type not in RUN_TYPES:
         raise HTTPException(status_code=400,
-                            detail="only run_type=%r supported" % RUN_TYPE)
-    ok, msg, run = create_run(body.scenario_id, body.parent_run_id, body.run_type)
+                            detail="run_type must be one of %s"
+                                   % ", ".join(RUN_TYPES))
+    if body.run_type == RUN_TYPE_WHATIF:
+        if not body.parent_run_id:
+            raise HTTPException(status_code=400,
+                                detail="what-if run requires parent_run_id")
+        if not body.assumptions:
+            raise HTTPException(status_code=400,
+                                detail="what-if run requires assumptions")
+    elif body.assumptions:
+        raise HTTPException(status_code=400,
+                            detail="reality run does not accept assumptions")
+    try:
+        ok, http_status, msg, run = create_run(
+            body.scenario_id, body.parent_run_id, body.run_type,
+            body.assumptions)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if not ok:
-        raise HTTPException(status_code=500, detail=msg)
+        raise HTTPException(status_code=http_status, detail=msg)
     return run
 
 

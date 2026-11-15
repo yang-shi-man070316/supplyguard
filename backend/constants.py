@@ -12,8 +12,12 @@
     run_id 规则        -> RUN_ID_PREFIX / format_run_id()
 """
 
-# ---- 运行类型: 现阶段唯一取值 reality (真实运行) ----
+# ---- 运行类型: reality (真实运行) / what-if (假设推演) ----
+# 阶段07板块1 起支持 what-if: 以 parent_run_id 关联基线 reality run,
+# 假设修改仅作用于自身 run 快照副本, 绝不写回 parent。
 RUN_TYPE = "reality"
+RUN_TYPE_WHATIF = "what-if"
+RUN_TYPES = (RUN_TYPE, RUN_TYPE_WHATIF)
 
 # ---- 依赖检查状态枚举 (dependency_checks.status) ----
 DEPENDENCY_STATUS = ["satisfied", "unsatisfied", "unknown"]
