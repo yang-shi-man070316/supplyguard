@@ -17,9 +17,12 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from analysis.llm_explainer import run_llm_explain
 from analysis.ml_demand_predict import run_ml_predict
 from analysis.rag_store import run_rag_query
+from analysis.report_builder import build_report
 from analysis.weather_evidence import run_weather_evidence
+import ai_tools
 from constants import RUN_TYPE
 from db import close_conn, get_conn, next_run_id
 from gap_check import get_blockers
@@ -654,6 +657,99 @@ def api_ml_demand_trend():
       auxiliary_only 恒为 true; 判定表零读写
     """
     ok, http_status, msg, data = run_ml_predict()
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+# ============================================================
+# 阶段06板块4: 只读工具调用接口 + LLM 解释接口 + 阶段报告接口
+# (全部只新增, 原有接口与 T1~T4 判定逻辑保持完全不变)
+# - GET /api/tools/current-demand  当前需求 (每次调用自动落 tool trace)
+# - GET /api/tools/current-stock   当前库存 (同上)
+# - GET /api/tools/task-result     T1~T5 任务结果 (同上)
+# - GET /api/tools/plan-results    候选方案判定 (同上)
+# - GET /api/explain               LLM 解释 (先计算再解释, 解释落 evidence_v2)
+# - GET /api/reports/{run_id}      标准 Markdown 阶段报告 (聚合全部证据)
+# 工具只读不修改业务; tool trace 证据类型为 'tool', LLM 解释为 'llm'。
+# ============================================================
+
+@app.get("/api/tools/current-demand")
+def api_tool_current_demand(service_id: str = None):
+    """只读工具: 当前服务点需求 (每服务点每物资最新一条需求观测)。
+
+    - 每次调用自动把调用轨迹写入 evidence_v2 (tool trace)
+    - service_id 可选; 无匹配 → 空列表
+    """
+    ok, http_status, msg, data = ai_tools.get_current_demand(service_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+@app.get("/api/tools/current-stock")
+def api_tool_current_stock(reserve_id: str = None, material_id: str = None):
+    """只读工具: 当前储备点库存 (每储备点每物资最新一条库存观测)。
+
+    - 每次调用自动落 tool trace; 两个过滤参数均可选, 可组合
+    """
+    ok, http_status, msg, data = ai_tools.get_current_stock(reserve_id,
+                                                            material_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+@app.get("/api/tools/task-result")
+def api_tool_task_result(run_id: str, task_id: str = "T1"):
+    """只读工具: T1~T5 任务结果 + 依赖检查明细 (每次调用自动落 tool trace)。
+
+    - run_id 必填; run 不存在 → 404
+    """
+    ok, http_status, msg, data = ai_tools.get_task_result(run_id, task_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+@app.get("/api/tools/plan-results")
+def api_tool_plan_results(run_id: str):
+    """只读工具: 候选方案 + 可行性判定 (每次调用自动落 tool trace)。
+
+    - run_id 必填; run 不存在 → 404
+    """
+    ok, http_status, msg, data = ai_tools.get_plan_results(run_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+@app.get("/api/explain")
+def api_explain(run_id: str):
+    """LLM 解释接口 (阶段06板块4, 先计算→再解释)。
+
+    - 输入: T1~T5 结构化结果 + 统计摘要 + 天气/RAG/ML/工具全部辅助证据
+    - LLM 仅做自然语言解读, 不修改任何判定结论; 解释文本写入
+      evidence_v2 (evidence_type='llm')
+    - LLM 故障/禁用 → status='unavailable' (HTTP 200 降级),
+      判定结论不受影响; run 不存在 → 404
+    """
+    ok, http_status, msg, data = run_llm_explain(run_id)
+    if not ok:
+        raise HTTPException(status_code=http_status, detail=msg)
+    return data
+
+
+@app.get("/api/reports/{run_id}")
+def api_report(run_id: str):
+    """标准 Markdown 阶段报告 (阶段06板块4)。
+
+    - 聚合 T1~T5 判定结果 / 缺口 / 方案 / 统计摘要 / 天气 / ML / RAG /
+      工具轨迹 / LLM 解释 全部证据
+    - 组件异常在报告「六、组件健康状态」标注 ⚠
+    - run 不存在 → 404
+    """
+    ok, http_status, msg, data = build_report(run_id)
     if not ok:
         raise HTTPException(status_code=http_status, detail=msg)
     return data

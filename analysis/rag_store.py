@@ -206,8 +206,11 @@ def run_rag_query(query: str) -> tuple:
     """RAG 检索 + 结果写入 evidence_v2 (辅助证据, 不触碰任何判定结果)。
 
     - query 缺失/空白 → (False, 400, ...)
-    - 检索命中/未命中都落库: evidence status='ok', value_json 含
-      matched 标记; 未命中 answer 为固定文本 "无可靠依据"
+    - 知识库有文档: 命中/未命中都落库, evidence status='ok', value_json
+      含 matched 标记; 未命中 answer 为固定文本 "无可靠依据"
+    - 知识库为空/不可读 (doc_count=0, 组件故障): answer 仍为固定文本
+      "无可靠依据", 但 evidence status='unavailable' 并携带 error_message
+      (阶段06板块4 失效降级专项: 组件故障标记 unavailable)
     - 数据库错误 → (False, 500, ...)
     返回 (ok, http_status, msg, data); data = 检索结果 + evidence_id。
     """
@@ -217,16 +220,20 @@ def run_rag_query(query: str) -> tuple:
         return False, 400, "query required", None
     query = str(query).strip()
     result = search_rag(query)
+    # 组件故障判定: 知识库无任何可用文档 → 组件降级 (区别于查询无匹配)
+    component_degraded = result["doc_count"] == 0
+    result["component_status"] = "degraded" if component_degraded else "ok"
     evidence_id = None
     try:
         ok, evidence_id = save_evidence(
             evidence_type="rag",
             source_id="query:" + hashlib.sha1(
                 query.encode("utf-8")).hexdigest()[:12],
-            status="ok",  # 检索动作成功完成 (无结果 ≠ 证据不可用)
+            status="unavailable" if component_degraded else "ok",
             value_json=json.dumps(result, ensure_ascii=False),
             observed_at=_now(),
-            error_message="",
+            error_message=("rag_docs 知识库为空或不可读, RAG 组件异常"
+                           if component_degraded else ""),
         )
     except ValueError as exc:
         return False, 500, "rag evidence save failed: %s" % exc, None

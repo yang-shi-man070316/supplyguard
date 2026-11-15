@@ -20,6 +20,7 @@ T1 判断逻辑自板块3 起保持不变。
 """
 
 import json
+import sqlite3
 
 from db import close_conn, get_conn
 

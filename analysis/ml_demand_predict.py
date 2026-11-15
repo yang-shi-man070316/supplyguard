@@ -23,6 +23,7 @@ CLI 用法: python analysis/ml_demand_predict.py
 """
 
 import json
+import os
 import sys
 import sqlite3
 from datetime import datetime
@@ -236,10 +237,47 @@ def run_ml_predict() -> tuple:
 
     - 预测结果 (含模型状态) 写入 evidence_v2: evidence_type='ml',
       status='ok', value_json 为完整预测载荷
+    - SUPPLYGUARD_ML_DISABLED=1 (阶段06板块4 失效降级专项故障注入):
+      跳过训练, evidence status='unavailable' 并携带 error_message
     - 数据库错误 → (False, 500, ...)
     返回 (ok, http_status, msg, data); data = 预测载荷 + evidence_id。
     """
     from backend.run_store import save_evidence  # 懒加载, 纯预测不依赖 DB
+
+    if os.environ.get("SUPPLYGUARD_ML_DISABLED", "") == "1":
+        result = {
+            "model": MODEL_NAME,
+            "classes": TREND_CLASSES,
+            "auxiliary_only": True,
+            "observed_at": _now(),
+            "model_status": "unavailable",
+            "skipped_runs": [],
+            "prediction": {
+                "trend": None,
+                "probability": None,
+                "window": "下一窗口",
+                "latest_run_id": None,
+                "note": "ML component disabled (故障注入)",
+            },
+        }
+        evidence_id = None
+        try:
+            ok, evidence_id = save_evidence(
+                evidence_type="ml",
+                source_id="ml:demand-trend",
+                status="unavailable",
+                value_json=json.dumps(result, ensure_ascii=False),
+                observed_at=result["observed_at"],
+                error_message="ML component disabled by "
+                              "SUPPLYGUARD_ML_DISABLED=1 (故障注入)",
+            )
+        except ValueError as exc:
+            return False, 500, "ml evidence save failed: %s" % exc, None
+        if not ok:
+            return False, 500, "ml evidence save failed: %s" % evidence_id, None
+        data = dict(result)
+        data["evidence_id"] = evidence_id
+        return True, 200, "ml component disabled (unavailable)", data
 
     try:
         result = predict_next_window()
