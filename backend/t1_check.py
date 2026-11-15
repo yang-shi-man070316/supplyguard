@@ -12,7 +12,8 @@ T1 最小判断逻辑 (严格按阶段03文档):
     - 检查对象: 快照 demands 中每条 (服务点, 物资) 需求
     - 依赖状态: satisfied / unsatisfied / unknown
     - 任务状态: 任一 unsatisfied → blocked; 全部 satisfied → established;
-      无 unsatisfied 但有 unknown → pending_verification;
+      全部 unknown → unknown (阶段07板块2 取证失败降级);
+      mixed satisfied+unknown → pending_verification;
       快照无需求观测 → unknown
 
 板块4 起本模块导出 check_t1(snapshot) 纯判断函数, 与 t2~t5_check 并行;
@@ -28,15 +29,20 @@ T1_TASK_ID = "T1"
 T1_DEP_KEY = "T1-D1"
 T1_DEP_DESC = "最新有效签收接收量 ≥ 当期最低需求"
 
-# 与板块3文档对齐后的 T1 静态描述 (板块1 rule_notes 沿用旧库存口径, 此处幂等修正)
+# 阶段07板块2 取证失败降级语义 (与板块3文档对齐后的 T1 静态描述):
+#   签收条目 status='unavailable' 表示「接收确认取证失败」——取证失败 ≠
+#   业务判定失败: 该组合依赖判 unknown (禁止输出未收到/NOT_RECEIVED 结论);
+#   若更早存在有效签收 (status≠unavailable 且数量有效), 旧回执仍沿用判定。
 T1_ALIGNED_DESCRIPTION = "全部关键服务点当期最低需求均可被当前签收接收保障"
 T1_ALIGNED_RULE_NOTES = (
     "T1-D1 最新有效签收接收量≥当期最低需求: 对每个服务点每种物资, "
-    "取最新有效需求与最新有效签收, 接收量≥需求量判 satisfied; "
-    "无签收或接收不足判 unsatisfied; 需求或签收数据无效判 unknown。"
+    "取最新有效需求与最新签收证据, 接收量≥需求量判 satisfied; "
+    "无签收或接收不足判 unsatisfied; 需求或签收数据无效判 unknown; "
+    "最新签收证据为取证失败 (status='unavailable') 时: 更早有有效签收则"
+    "沿用旧回执判定, 否则判 unknown (取证失败≠未收到, 禁止输出未收到结论)。"
     "任一 unsatisfied → blocked; 全部 satisfied → established; "
-    "无 unsatisfied 但有 unknown → pending_verification; "
-    "快照无需求观测 → unknown"
+    "全部 unknown → unknown; 无 unsatisfied 但有 mixed → "
+    "pending_verification; 快照无需求观测 → unknown"
 )
 
 
@@ -53,12 +59,46 @@ def align_t1_meta(conn):
 
 
 def _latest_receipt_for(receipts, service_id, material_id):
-    """该 (服务点, 物资) 的最新一条签收。receipts 已按 (observed_at, id) 升序,
-    取最后一条匹配项即最新; 无匹配返回 None。"""
+    """该 (服务点, 物资) 的最新一条签收证据 (含取证失败确认)。receipts 已按
+    (observed_at, id) 升序, 取最后一条匹配项即最新; 无匹配返回 None。"""
     latest = None
     for r in receipts:
         if (r.get("service_id") == service_id
                 and r.get("material_id") == material_id):
+            latest = r
+    return latest
+
+
+def _is_failed_confirmation(receipt) -> bool:
+    """该签收证据是否为「取证失败确认」 (阶段07板块2)。
+
+    取证失败确认: status='unavailable' 且无有效接收数量 (received_quantity
+    为 null/无效), 表示「现场无法留下签收凭证, 送达与否未知」——不是
+    received:false, 绝不代表确认未收到。
+    """
+    return receipt.get("status") == "unavailable"
+
+
+def _is_valid_receipt(receipt) -> bool:
+    """该签收证据是否为「有效签收回执」: 非取证失败确认且数量有效。"""
+    return (not _is_failed_confirmation(receipt)
+            and _is_valid_quantity(receipt.get("received_quantity")))
+
+
+def _latest_valid_receipt_for(receipts, service_id, material_id,
+                              before=None) -> dict:
+    """该组合最新一条有效签收回执 (可选: 只取 before 之前的更早条目)。
+
+    阶段07板块2 边界语义: 取证失败确认不使历史回执失效——旧回执若满足
+    有效性规则 (非 unavailable 且数量有效), 仍可沿用为有效证据。
+    """
+    latest = None
+    for r in receipts:
+        if before is not None and r is before:
+            break
+        if (r.get("service_id") == service_id
+                and r.get("material_id") == material_id
+                and _is_valid_receipt(r)):
             latest = r
     return latest
 
@@ -89,7 +129,7 @@ def _judge_demand(demand, receipts) -> dict:
             "reason": "需求记录无效 (服务点/物资缺失或需求量缺失/为负), 无法判断",
         }
 
-    # 2) latest valid receipt exists?
+    # 2) latest receipt evidence exists?
     receipt = _latest_receipt_for(receipts, service, material)
     if receipt is None:
         return {
@@ -97,6 +137,53 @@ def _judge_demand(demand, receipts) -> dict:
             "evidence": evidence,
             "reason": "%s %s 无签收记录, 无法证明接收到位" % (service, material),
         }
+
+    # 阶段07板块2: 最新证据为取证失败确认 (status='unavailable') →
+    # 取证失败 ≠ 未收到: 有更早有效回执则沿用判定, 否则判 unknown
+    # (绝不输出未收到/NOT_RECEIVED 确定结论)。
+    if _is_failed_confirmation(receipt):
+        evidence["failed_confirmation"] = {
+            "receipt_id": receipt.get("receipt_id"),
+            "status": receipt.get("status"),
+            "received_quantity": receipt.get("received_quantity"),
+            "observed_at": receipt.get("observed_at"),
+            "error_message": receipt.get("error_message"),
+        }
+        older = _latest_valid_receipt_for(receipts, service, material,
+                                          before=receipt)
+        if older is not None:
+            evidence["latest_receipt"] = {
+                "receipt_id": older.get("receipt_id"),
+                "received_quantity": older.get("received_quantity"),
+                "observed_at": older.get("observed_at"),
+            }
+            received = older.get("received_quantity")
+            inherited = "沿用历史有效回执 %s (%d件)" % (
+                older.get("receipt_id"), received)
+            if received >= required:
+                return {
+                    "dep_key": T1_DEP_KEY, "dep_desc": T1_DEP_DESC,
+                    "status": "satisfied",
+                    "evidence": evidence,
+                    "reason": ("本次接收确认取证失败(unavailable), %s; "
+                               "签收%d件 ≥ 需求%d件, 满足" %
+                               (inherited, received, required)),
+                }
+            return {
+                "dep_key": T1_DEP_KEY, "dep_desc": T1_DEP_DESC,
+                "status": "unsatisfied",
+                "evidence": evidence,
+                "reason": ("本次接收确认取证失败(unavailable), %s; "
+                           "签收%d件 < 需求%d件, 缺口%d件" %
+                           (inherited, received, required, required - received)),
+            }
+        return {
+            "dep_key": T1_DEP_KEY, "dep_desc": T1_DEP_DESC, "status": "unknown",
+            "evidence": evidence,
+            "reason": ("%s %s 接收确认取证失败 (status=unavailable, 无有效签收"
+                       "凭证), 送达与否无法判断, 不判定未收到" % (service, material)),
+        }
+
     evidence["latest_receipt"] = {
         "receipt_id": receipt.get("receipt_id"),
         "received_quantity": receipt.get("received_quantity"),
@@ -130,7 +217,9 @@ def _aggregate_task_status(checks) -> tuple:
 
     checks 为空 → unknown (快照无需求观测);
     任一 unsatisfied → blocked; 全部 satisfied → established;
-    无 unsatisfied 但有 unknown → pending_verification。
+    全部 unknown → unknown (阶段07板块2: 取证失败降级语义——
+    全部依赖均无法判断时任务整体 unknown, 不落入待验证);
+    mixed satisfied+unknown → pending_verification。
     """
     if not checks:
         return "unknown", "快照中无需求观测, 无法判断"
@@ -147,6 +236,10 @@ def _aggregate_task_status(checks) -> tuple:
             len(bad), len(checks), head, more)
     if all(s == "satisfied" for s in statuses):
         return "established", "全部%d项需求均有有效签收且接收量满足" % len(checks)
+    if all(s == "unknown" for s in statuses):
+        return "unknown", (
+            "全部%d项依赖均无法判断 (取证失败/证据缺失), 任务结果未知"
+            % len(checks))
     unknown_n = sum(1 for s in statuses if s == "unknown")
     return "pending_verification", (
         "无 unsatisfied 依赖, 但有%d项依赖无法判断, 待验证" % unknown_n)

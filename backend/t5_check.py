@@ -4,6 +4,9 @@
     T5-D1 多源观测数据无冲突: 无负值矛盾、无非法状态值、
     观测时间不晚于落库时间 (容差内); 无任何观测证据判 unknown。
 
+阶段07板块2 降级结论: 快照存在取证失败 (status='unavailable') 签收证据时,
+数据一致性仍判 satisfied, 但 reason 标注「降级置信 (degraded)」结论。
+
 数据来源: 只读快照 snapshot["stocks"] / ["demands"] / ["transports"]
 / ["receipts"] (各条目带 created_at 落库时间, 板块4 快照扩展提供)。
 状态体系复用: 依赖 satisfied/unsatisfied/unknown; 任务
@@ -113,8 +116,20 @@ def check_t5(snapshot: dict) -> dict:
         conflicts.append("观测时间晚于落库时间 %d 条 (超过%d秒容差)"
                          % (inverted, _TIME_TOLERANCE.seconds))
 
+    # 阶段07板块2: 取证失败(unavailable)证据计数 —— 数据本身无冲突,
+    # 但结论置信度降级 (degraded conclusion), 仍判 satisfied/established。
+    unavailable_receipts = [
+        r for r in receipts if r.get("status") == "unavailable"
+    ]
+
     if conflicts:
         status, reason = "unsatisfied", "; ".join(conflicts)
+    elif unavailable_receipts:
+        status = "satisfied"
+        reason = (
+            "库存/需求/运输/签收观测之间无矛盾; 检测到 %d 条取证失败"
+            "(unavailable) 证据, 结论为降级置信 (degraded)" %
+            len(unavailable_receipts))
     else:
         status, reason = "satisfied", "库存/需求/运输/签收观测之间无矛盾"
     checks = [{
@@ -125,9 +140,16 @@ def check_t5(snapshot: dict) -> dict:
             "negative_count": len(negatives),
             "bad_transport_states": bad_states,
             "inverted_time_count": inverted,
+            "unavailable_receipt_count": len(unavailable_receipts),
         },
     }]
     task_status, task_reason = _aggregate(checks)
+    if unavailable_receipts and task_status == "established":
+        # 阶段07板块2: 任务级降级结论 (established with degraded conclusion)
+        task_reason = (
+            "库存/需求/运输/签收观测之间无矛盾; 检测到 %d 条取证失败"
+            "(unavailable) 证据, 结论为降级置信 (degraded)" %
+            len(unavailable_receipts))
     return {
         "task_id": T5_TASK_ID,
         "checks": checks,
