@@ -76,7 +76,7 @@ python scenarios/load_scenario.py S5 --dry-run
 | **S1** | 标准基线 | `python scenarios/load_scenario.py S1 --full` | T1 blocked（8/9 需求缺签收），T2~T5 established |
 | **S2** | 缺口识别 | `python scenarios/load_scenario.py S2 --full` | blockers：P1/W gap=2、P2/L gap=3；无签收的组合不武断算缺口 |
 | **S3** | 候选方案判定 | `python scenarios/load_scenario.py S3 --full` | T1 blocked（签收3<需求7）；PLAN-A 可执行，PLAN-B（V2 FAULT）/PLAN-C（路线超时）不可执行 |
-| **S4** | what-if 推演 | `python scenarios/load_scenario.py S4 --whatif A --parent <S3基线run>` | 推演A：V2修复 → PLAN-B 转可执行；推演B：时限放宽 → PLAN-C 可执行；推演C：库存削减 → 全部不可执行；父基线指纹无污染 |
+| **S4** | what-if 推演 | `python scenarios/load_scenario.py S4 --whatif whatif-A --parent <S3基线run>` | 推演A：V2修复 → PLAN-B 转可执行；推演B：时限放宽 → PLAN-C 可执行；推演C：库存削减 → 全部不可执行；父基线指纹无污染 |
 | **S5** | 取证失败降级 | `python scenarios/load_scenario.py S5 --full` | T1 unknown、T4 pending_verification、T5 established(degraded)；无 blocker；无 NOT_RECEIVED |
 | **S5 回填** | 证据回填复测 | `python scenarios/load_scenario.py S5 --variant refill --full` | 补合法签收 8 件后 T1 恢复 established；旧 run 判定不动 |
 

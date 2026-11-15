@@ -1,4 +1,5 @@
 import json
+import sys
 import time
 import paho.mqtt.client as mqtt
 from scenario import load_scenario
@@ -7,8 +8,14 @@ from scenario import load_scenario
 BROKER = "127.0.0.1"
 PORT = 1883
 
-client = mqtt.Client()
-client.connect(BROKER, PORT, 60)
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+client.reconnect_delay_set(min_delay=1, max_delay=30)
+try:
+    client.connect(BROKER, PORT, 60)
+except OSError as exc:
+    sys.exit(f"无法连接 MQTT broker {BROKER}:{PORT} ({exc}) —— 请先启动 broker (如 mosquitto)")
+# 网络循环线程: 维持 keepalive 心跳 + broker 断线自动重连, 否则连接约 90 秒后被 broker 断开
+client.loop_start()
 
 while True:
     data = load_scenario()

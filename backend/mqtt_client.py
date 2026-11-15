@@ -238,8 +238,24 @@ def on_message(client, userdata, msg):
     if _main_loop is not None:
         _main_loop.call_soon_threadsafe(_push_snapshot, current_snapshot())
 
+def on_connect(client, userdata, flags, rc):
+    """每次(重)连接成功后恢复订阅。
+
+    paho 默认 clean_session=True, 断线自动重连后订阅不会保留;
+    不在此处重订阅, 实时链路会在一次网络闪断后静默失效。
+    """
+    client.subscribe("nova/bb03/#")
+
+
 mqtt_client = mqtt.Client()
+mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
-mqtt_client.connect(BROKER, PORT, 60)
-mqtt_client.subscribe("nova/bb03/#")
+try:
+    mqtt_client.connect(BROKER, PORT, 60)
+except OSError as exc:
+    # broker 不在时后端照常启动 (场景重放/判定/前端全部可用), 实时链路降级;
+    # connect_async + loop_start 会在后台持续重试, 成功后 on_connect 自动恢复订阅
+    print("MQTT broker 不可达 (%s), 实时链路暂不可用, 将后台重试" % exc)
+    mqtt_client.connect_async(BROKER, PORT, 60)
+mqtt_client.subscribe("nova/bb03/#")  # 首次订阅 (断线重连后由 on_connect 恢复)
 mqtt_client.loop_start()
